@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSimulation } from './useSimulation';
 import type { Telemetry, AGVData } from './useSimulation';
 import SimulatorCanvas from './SimulatorCanvas';
@@ -7,12 +7,25 @@ import './App.css';
 // 模式定義：SELECT(選擇), SINGLE_ACTION(單動), BUILD_SQ(方塊), BUILD_CIR(圓形), BUILD_STAR(設備), AUTO(自動)
 type ToolMode = 'SELECT' | 'SINGLE_ACTION' | 'BUILD_SQ' | 'BUILD_CIR' | 'BUILD_STAR' | 'AUTO';
 
+interface BackgroundSettings {
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
+  width: number;       // 公尺 (m)
+  height: number;      // 公尺 (m)
+  aspectRatio: number; // 圖片原始比例 w/h
+  x: number;           // mm
+  y: number;           // mm
+  rotation: number;    // 度
+  aspectRatioLocked: boolean;
+}
+
 function App() {
   const { telemetry, isConnected, sendCommand } = useSimulation('ws://localhost:8000/ws');
   
   // 權限矩陣定義
   const MODE_PERMISSIONS: Record<ToolMode, { canAdd: 'NONE' | 'OBSTACLE' | 'EQUIPMENT', canDelete: boolean, canEdit: boolean, rightClick: 'NONE' | 'SET_TARGET' | 'CANCEL_TASK' | 'CANCEL_SELECT' }> = {
-    SELECT: { canAdd: 'NONE', canDelete: false, canEdit: false, rightClick: 'CANCEL_SELECT' },
+    SELECT: { canAdd: 'NONE', canDelete: true, canEdit: true, rightClick: 'CANCEL_SELECT' },
     SINGLE_ACTION: { canAdd: 'NONE', canDelete: false, canEdit: false, rightClick: 'SET_TARGET' },
     BUILD_SQ: { canAdd: 'OBSTACLE', canDelete: true, canEdit: true, rightClick: 'CANCEL_SELECT' },
     BUILD_CIR: { canAdd: 'OBSTACLE', canDelete: true, canEdit: true, rightClick: 'CANCEL_SELECT' },
@@ -26,13 +39,97 @@ function App() {
   const [showSearch, setShowSearch] = useState(true);
   const [globalRpm, setGlobalRpm] = useState(3000);
 
+  // 背景地圖相關狀態
+  const [bgImageSrc, setBgImageSrc] = useState<string | null>(() => {
+    return localStorage.getItem('agv_bg_image') || null;
+  });
+
+  const [bgSettings, setBgSettings] = useState<BackgroundSettings>(() => {
+    const saved = localStorage.getItem('agv_bg_settings');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
+    }
+    return {
+      visible: true,
+      locked: false,
+      opacity: 40,
+      width: 50,
+      height: 50,
+      aspectRatio: 1,
+      x: 25000,
+      y: 25000,
+      rotation: 0,
+      aspectRatioLocked: true,
+    };
+  });
+
+  const [bgPanelOpen, setBgPanelOpen] = useState(false);
+
+  // 背景參數自動寫入 LocalStorage
+  useEffect(() => {
+    localStorage.setItem('agv_bg_settings', JSON.stringify(bgSettings));
+  }, [bgSettings]);
+
+  // 世界邊界尺寸 (mm)：以匯入地圖的真實物理尺寸為準，未設定時退回 50000
+  const mapW = (typeof bgSettings.width === 'number' && bgSettings.width > 0) ? bgSettings.width * 1000 : 50000;
+  const mapH = (typeof bgSettings.height === 'number' && bgSettings.height > 0) ? bgSettings.height * 1000 : 50000;
+
+  // 地圖尺寸變動或連線建立時，同步世界邊界給後端
+  useEffect(() => {
+    if (isConnected) sendCommand('set_map_size', { width: mapW, height: mapH });
+  }, [isConnected, mapW, mapH, sendCommand]);
+
+  // 背景圖上傳處理
+  const handleBgImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (file.size > 2.5 * 1024 * 1024) {
+      alert("⚠️ 圖檔較大，可能會使網頁讀取變慢。建議使用小於 2MB 的圖片以獲得最佳體驗！");
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const ratio = img.naturalWidth / img.naturalHeight;
+        setBgImageSrc(base64);
+        setBgSettings(prev => {
+          const newWidth = prev.width;
+          const newHeight = prev.aspectRatioLocked ? Math.round((newWidth / ratio) * 100) / 100 : prev.height;
+          return {
+            ...prev,
+            aspectRatio: ratio,
+            height: newHeight,
+            // 上傳新圖時，自動將地圖中心點座標初始化為置中 (撐滿整個 currentMapSize 的中心點)
+            x: (newWidth * 1000) / 2,
+            y: (newHeight * 1000) / 2,
+            rotation: 0,
+            visible: true
+          };
+        });
+        
+        try {
+          localStorage.setItem('agv_bg_image', base64);
+        } catch (err) {
+          alert("❌ 儲存失敗：圖檔大小超出瀏覽器儲存上限 (約5MB)。請使用經壓縮後的圖片！");
+        }
+      };
+      img.src = base64;
+    };
+    reader.readAsDataURL(file);
+  };
+
   // 本地緩衝狀態
   const [localObFields, setLocalObFields] = useState({ id: "", x: 0, y: 0, angle: 0 });
   const [isEditing, setIsEditing] = useState(false);
+  const lastCommitTime = useRef<number>(0);
 
   // 樂觀更新狀態
   const [pendingObstacles, setPendingObstacles] = useState<any[]>([]);
   const [pendingDeletions, setPendingDeletions] = useState<Set<string>>(new Set());
+  const [optimisticAgvTargets, setOptimisticAgvTargets] = useState<Record<string, { x: number, y: number, status: string, is_running: boolean }>>({});
 
   // AUTO 模式狀態管理
   const [autoTaskSource, setAutoTaskSource] = useState<string | null>(null);
@@ -71,6 +168,8 @@ function App() {
 
   // 同步遙測數值
   useEffect(() => {
+    if (Date.now() - lastCommitTime.current < 1500) return;
+
     if (selectedObstacle && !isEditing) {
       setLocalObFields(prev => {
           if (prev.id !== selectedObstacle.id || 
@@ -116,7 +215,23 @@ function App() {
         return changed ? next : prev;
       });
     }
-  }, [telemetry]);
+
+    // 清理 optimisticAgvTargets
+    if (Object.keys(optimisticAgvTargets).length > 0) {
+      setOptimisticAgvTargets(prev => {
+        let changed = false;
+        const next = { ...prev };
+        telemetry.agvs.forEach(agv => {
+          const opt = next[agv.id];
+          if (opt && (agv.status !== 'PLANNING' || (agv.path && agv.path.length > 0))) {
+            delete next[agv.id];
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [telemetry, optimisticAgvTargets]);
 
   useEffect(() => {
     if (telemetry?.agvs.length && !selectedAgvId) {
@@ -202,6 +317,11 @@ function App() {
 
   const handleCanvasClick = (x: number, y: number) => {
     if (!telemetry) return;
+
+    if (isEditing && selectedObstacle) {
+      handleCommit();
+      setIsEditing(false);
+    }
 
     if (addAgvMode) {
       if (MODE_PERMISSIONS[activeTool].canAdd === 'EQUIPMENT') {
@@ -294,6 +414,7 @@ function App() {
 
   const handleCommit = (field?: string, value?: any) => {
     if (!selectedObstacle) return;
+    lastCommitTime.current = Date.now();
     const dataToSync = { ...localObFields };
     if (field && value !== undefined) (dataToSync as any)[field] = value;
     if (dataToSync.id !== selectedObstacle.id) {
@@ -303,7 +424,11 @@ function App() {
         sendCommand('update_obstacle', { data: { old_id: selectedObstacle.id, new_id: dataToSync.id } });
         setSelectedObId(dataToSync.id);
     } else {
-        sendCommand('update_obstacle', { data: { ...selectedObstacle, x: snapToCenter(dataToSync.x), y: snapToCenter(dataToSync.y), docking_angle: dataToSync.angle } });
+        const sx = snapToCenter(dataToSync.x);
+        const sy = snapToCenter(dataToSync.y);
+        const sa = Math.max(0, Math.min(359, dataToSync.angle));
+        setLocalObFields(prev => ({ ...prev, x: sx, y: sy, angle: sa }));
+        sendCommand('update_obstacle', { data: { ...selectedObstacle, x: sx, y: sy, angle: sa, docking_angle: sa } });
     }
   };
 
@@ -322,8 +447,31 @@ function App() {
   // 樂觀遙測數據封裝
   const optimisticTelemetry = telemetry ? {
     ...telemetry,
+    agvs: telemetry.agvs.map(agv => {
+        const opt = optimisticAgvTargets[agv.id];
+        if (opt) {
+            return {
+                ...agv,
+                target: { x: opt.x, y: opt.y },
+                status: opt.status,
+                is_running: opt.is_running,
+                path: []
+            };
+        }
+        return agv;
+    }),
     obstacles: [
-        ...telemetry.obstacles.filter(ob => !pendingDeletions.has(ob.id)),
+        ...telemetry.obstacles.filter(ob => !pendingDeletions.has(ob.id)).map(ob => {
+            if (ob.id === selectedObId && localObFields.id === selectedObId) {
+                return {
+                    ...ob,
+                    x: localObFields.x,
+                    y: localObFields.y,
+                    docking_angle: localObFields.angle
+                };
+            }
+            return ob;
+        }),
         ...pendingObstacles
     ]
   } : null;
@@ -402,32 +550,68 @@ function App() {
             <div className="item-card active">
               <div className="telemetry-grid">
                 <div className="tele-item"><label>ID</label>
-                    <input type="text" readOnly={!MODE_PERMISSIONS[activeTool].canEdit} value={localObFields.id} onFocus={() => setIsEditing(true)} onChange={(e) => setLocalObFields(prev => ({ ...prev, id: e.target.value }))} onBlur={() => { handleCommit(); setIsEditing(false); }} onKeyDown={(e) => e.key === 'Enter' && handleCommit()} />
+                    <input type="text" readOnly={!MODE_PERMISSIONS[activeTool].canEdit} value={localObFields.id} onFocus={() => setIsEditing(true)} onChange={(e) => setLocalObFields(prev => ({ ...prev, id: e.target.value }))} onBlur={() => { handleCommit(); setIsEditing(false); }} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
                 </div>
                 {selectedObstacle.type === 'equipment' && (
                     <>
                     <div className="tele-item"><label>STATUS</label>
-                        <select disabled={!MODE_PERMISSIONS[activeTool].canEdit} value={selectedObstacle.status || 'running'} onChange={(e) => sendCommand('update_obstacle', { data: { ...selectedObstacle, status: e.target.value } })}>
+                        <select disabled={!MODE_PERMISSIONS[activeTool].canEdit} value={selectedObstacle.status || 'running'} onChange={(e) => sendCommand('update_obstacle', { data: { ...selectedObstacle, x: snapToCenter(localObFields.x), y: snapToCenter(localObFields.y), angle: localObFields.angle, docking_angle: localObFields.angle, status: e.target.value } })}>
                             <option value="normal">NORMAL</option>
                             <option value="running">RUNNING</option>
                             <option value="error">ERROR</option>
                         </select>
                     </div>
                     <div className="tele-item"><label>CARGO</label>
-                        <button disabled={!MODE_PERMISSIONS[activeTool].canEdit} className={selectedObstacle.has_goods ? 'warning' : 'primary'} style={{ height: '24px', fontSize: '10px', padding: '0 8px' }} onClick={() => sendCommand('update_obstacle', { data: { ...selectedObstacle, has_goods: !selectedObstacle.has_goods } })}>
+                        <button disabled={!MODE_PERMISSIONS[activeTool].canEdit} className={selectedObstacle.has_goods ? 'warning' : 'primary'} style={{ height: '24px', fontSize: '10px', padding: '0 8px' }} onClick={() => sendCommand('update_obstacle', { data: { ...selectedObstacle, x: snapToCenter(localObFields.x), y: snapToCenter(localObFields.y), angle: localObFields.angle, docking_angle: localObFields.angle, has_goods: !selectedObstacle.has_goods } })}>
                             {selectedObstacle.has_goods ? '■ LOADED' : '□ EMPTY'}
                         </button>
                     </div>
                     <div className="tele-item"><label>ANGLE</label>
-                        <input type="number" readOnly={!MODE_PERMISSIONS[activeTool].canEdit} min="0" max="359" value={localObFields.angle} onFocus={() => setIsEditing(true)} onChange={(e) => setLocalObFields(prev => ({ ...prev, angle: parseInt(e.target.value)||0 }))} onBlur={() => { handleCommit(); setIsEditing(false); }} onKeyDown={(e) => e.key === 'Enter' && handleCommit()} />
+                        <input 
+                          type="number" 
+                          readOnly={!MODE_PERMISSIONS[activeTool].canEdit} 
+                          min="0" max="359" 
+                          value={localObFields.angle} 
+                          onFocus={() => setIsEditing(true)} 
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            setLocalObFields(prev => ({ ...prev, angle: val }));
+                          }} 
+                          onBlur={() => { handleCommit(); setIsEditing(false); }} 
+                          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} 
+                        />
                     </div>
                     </>
                 )}
                 <div className="tele-item"><label>X</label>
-                  <input type="number" readOnly={!MODE_PERMISSIONS[activeTool].canEdit} step="1000" value={localObFields.x} onFocus={() => setIsEditing(true)} onChange={(e) => setLocalObFields(prev => ({ ...prev, x: parseInt(e.target.value)||0 }))} onBlur={() => { handleCommit(); setIsEditing(false); }} onKeyDown={(e) => e.key === 'Enter' && handleCommit()} />
+                  <input 
+                    type="number" 
+                    readOnly={!MODE_PERMISSIONS[activeTool].canEdit} 
+                    step="1000" 
+                    value={localObFields.x} 
+                    onFocus={() => setIsEditing(true)} 
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value) || 0;
+                      setLocalObFields(prev => ({ ...prev, x: val }));
+                    }} 
+                    onBlur={() => { handleCommit(); setIsEditing(false); }} 
+                    onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} 
+                  />
                 </div>
                 <div className="tele-item"><label>Y</label>
-                  <input type="number" readOnly={!MODE_PERMISSIONS[activeTool].canEdit} step="1000" value={localObFields.y} onFocus={() => setIsEditing(true)} onChange={(e) => setLocalObFields(prev => ({ ...prev, y: parseInt(e.target.value)||0 }))} onBlur={() => { handleCommit(); setIsEditing(false); }} onKeyDown={(e) => e.key === 'Enter' && handleCommit()} />
+                  <input 
+                    type="number" 
+                    readOnly={!MODE_PERMISSIONS[activeTool].canEdit} 
+                    step="1000" 
+                    value={localObFields.y} 
+                    onFocus={() => setIsEditing(true)} 
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value) || 0;
+                      setLocalObFields(prev => ({ ...prev, y: val }));
+                    }} 
+                    onBlur={() => { handleCommit(); setIsEditing(false); }} 
+                    onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} 
+                  />
                 </div>
               </div>
               <button className="danger" 
@@ -456,6 +640,263 @@ function App() {
         <div className="section">
           <h3>Global Cleanup</h3>
           <button className="danger" disabled={!MODE_PERMISSIONS[activeTool].canDelete} style={{ width: '100%' }} onClick={() => sendCommand('clear_obstacles')}>WIPE ALL OBSTACLES</button>
+        </div>
+
+        {/* 🗺️ 背景地圖配置面板 */}
+        <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
+          <div 
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }} 
+            onClick={() => setBgPanelOpen(!bgPanelOpen)}
+          >
+            <h3 style={{ margin: 0, border: 'none', padding: 0 }}>🗺️ 背景地圖配置</h3>
+            <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{bgPanelOpen ? '▲' : '▼'}</span>
+          </div>
+          
+          {bgPanelOpen && (
+            <div className="bg-map-panel">
+              {/* 匯入/更換地圖按鈕 */}
+              <div style={{ marginBottom: '12px' }}>
+                <input 
+                  type="file" 
+                  id="bg-map-file" 
+                  accept="image/*" 
+                  style={{ display: 'none' }} 
+                  onChange={handleBgImageUpload} 
+                />
+                <label htmlFor="bg-map-file" className="bg-upload-label">
+                  📂 {bgImageSrc ? '更換地圖背景' : '匯入地圖圖檔'}
+                </label>
+              </div>
+
+              {/* 操作小提示 */}
+              <div style={{ fontSize: '10px', color: '#8b949e', background: 'rgba(0,0,0,0.25)', padding: '6px 8px', borderRadius: '6px', marginBottom: '10px', lineHeight: '1.4', border: '1px solid rgba(88, 166, 255, 0.1)' }}>
+                💡 <b>操作小提示</b>：<br/>
+                • <b>畫布縮放</b>：滾動 [滑鼠滾輪] (以游標為中心)<br/>
+                • <b>地圖平移</b>：按住 [滑鼠右鍵] 或 [滾輪中鍵] 拖曳<br/>
+                • <b>重設視角</b>：點擊畫布右下角 [RESET VIEW]
+              </div>
+
+              {bgImageSrc && (
+                <>
+                  {/* 顯示與參數鎖定開關 */}
+                  <div className="bg-switch-row">
+                    <div className="bg-switch-label">👁️ 顯示地圖背景</div>
+                    <button 
+                      className={`bg-switch-btn ${bgSettings.visible ? 'active' : ''}`}
+                      onClick={() => setBgSettings(prev => ({ ...prev, visible: !prev.visible }))}
+                    >
+                      {bgSettings.visible ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  
+                  <div className="bg-switch-row">
+                    <div className="bg-switch-label">🔒 鎖定對齊參數</div>
+                    <button 
+                      className={`bg-switch-btn ${bgSettings.locked ? 'active' : ''}`}
+                      onClick={() => setBgSettings(prev => ({ ...prev, locked: !prev.locked }))}
+                    >
+                      {bgSettings.locked ? 'LOCKED' : 'UNLOCKED'}
+                    </button>
+                  </div>
+
+                  {/* 📏 真實物理尺寸區 */}
+                  <div className="bg-panel-sub">
+                    <div className="bg-panel-sub-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span>📏 真實尺寸</span>
+                      <button 
+                        className={`bg-aspect-ratio-toggle ${bgSettings.aspectRatioLocked ? 'locked' : ''}`}
+                        style={{ fontSize: '9px', padding: '0 4px', border: 'none', background: 'transparent' }}
+                        onClick={() => !bgSettings.locked && setBgSettings(prev => ({ ...prev, aspectRatioLocked: !prev.aspectRatioLocked }))}
+                        title="鎖定寬高比例"
+                      >
+                        {bgSettings.aspectRatioLocked ? '🔒 比例鎖定' : '🔓 自由拉伸'}
+                      </button>
+                    </div>
+                    
+                    <div className="bg-input-grid">
+                      <div className="bg-input-item">
+                        <label>寬度 (Width)</label>
+                        <div className="bg-input-wrapper">
+                          <input 
+                            type="number" 
+                            disabled={bgSettings.locked}
+                            min="1" max="1000" step="0.5"
+                            value={bgSettings.width}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseFloat(e.target.value) || 0);
+                              setBgSettings(prev => ({
+                                ...prev,
+                                width: val,
+                                height: prev.aspectRatioLocked ? Math.round((val / prev.aspectRatio) * 100) / 100 : prev.height
+                              }));
+                            }}
+                          />
+                          <span className="bg-input-unit">m</span>
+                        </div>
+                      </div>
+                      <div className="bg-input-item">
+                        <label>高度 (Height)</label>
+                        <div className="bg-input-wrapper">
+                          <input 
+                            type="number" 
+                            disabled={bgSettings.locked || bgSettings.aspectRatioLocked}
+                            min="1" max="1000" step="0.5"
+                            value={bgSettings.height}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseFloat(e.target.value) || 0);
+                              setBgSettings(prev => ({ ...prev, height: val }));
+                            }}
+                          />
+                          <span className="bg-input-unit">m</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 📍 偏移與旋轉微調 */}
+                  <div className="bg-panel-sub">
+                    <div className="bg-panel-sub-title">📍 偏移與旋轉</div>
+                    
+                    {/* 偏移 X */}
+                    <div className="bg-slider-item">
+                      <div className="bg-slider-header">
+                        <span>偏移 X (m)</span>
+                        <span className="bg-slider-val">{(bgSettings.x / 1000 - mapW / 2000).toFixed(1)}m</span>
+                      </div>
+                      <input
+                        type="range"
+                        disabled={bgSettings.locked}
+                        min="0" max={mapW} step="100"
+                        value={bgSettings.x}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          setBgSettings(prev => ({ ...prev, x: val }));
+                        }}
+                        className="bg-slider"
+                      />
+                    </div>
+                    
+                    {/* 偏移 Y */}
+                    <div className="bg-slider-item">
+                      <div className="bg-slider-header">
+                        <span>偏移 Y (m)</span>
+                        <span className="bg-slider-val">{(bgSettings.y / 1000 - mapH / 2000).toFixed(1)}m</span>
+                      </div>
+                      <input
+                        type="range"
+                        disabled={bgSettings.locked}
+                        min="0" max={mapH} step="100"
+                        value={bgSettings.y}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          setBgSettings(prev => ({ ...prev, y: val }));
+                        }}
+                        className="bg-slider"
+                      />
+                    </div>
+                    
+                    {/* 旋轉 */}
+                    <div className="bg-slider-item">
+                      <div className="bg-slider-header">
+                        <span>旋轉角度</span>
+                        <span className="bg-slider-val">{bgSettings.rotation}°</span>
+                      </div>
+                      <input 
+                        type="range"
+                        disabled={bgSettings.locked}
+                        min="0" max="359" step="1"
+                        value={bgSettings.rotation}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          setBgSettings(prev => ({ ...prev, rotation: val }));
+                        }}
+                        className="bg-slider"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 🔆 透明度 */}
+                  <div className="bg-slider-item" style={{ padding: '0 4px', marginBottom: '12px' }}>
+                    <div className="bg-slider-header">
+                      <span>🔆 透明度</span>
+                      <span className="bg-slider-val">{bgSettings.opacity}%</span>
+                    </div>
+                    <input 
+                      type="range"
+                      min="0" max="100" step="5"
+                      value={bgSettings.opacity}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        setBgSettings(prev => ({ ...prev, opacity: val }));
+                      }}
+                      className="bg-slider"
+                    />
+                  </div>
+
+                  {/* ⚡ 快速定位按鈕組 */}
+                  <div className="bg-panel-sub" style={{ padding: '8px' }}>
+                    <div className="bg-panel-sub-title" style={{ marginBottom: '6px' }}>⚡ 快速定位</div>
+                    <div className="bg-btn-grid">
+                      <button 
+                        disabled={bgSettings.locked}
+                        className="bg-btn-quick"
+                        onClick={() => setBgSettings(prev => ({ ...prev, x: prev.width * 500, y: prev.height * 500 }))}
+                        title="將背景地圖左下角精準貼齊畫布原點 (0,0)"
+                      >
+                        原點 (0,0)
+                      </button>
+                      <button 
+                        disabled={bgSettings.locked}
+                        className="bg-btn-quick"
+                        onClick={() => setBgSettings(prev => ({ ...prev, x: mapW / 2, y: mapH / 2 }))}
+                        title="將地圖中心居中對齊模擬器中心"
+                      >
+                        畫布置中
+                      </button>
+                      <button 
+                        disabled={bgSettings.locked}
+                        className="bg-btn-quick"
+                        style={{ color: 'var(--accent-red)' }}
+                        onClick={() => {
+                          if (window.confirm("確定要重設為預設對齊參數嗎？")) {
+                            setBgSettings(prev => {
+                              const newHeight = Math.round((50 / prev.aspectRatio) * 100) / 100;
+                              return {
+                                ...prev,
+                                width: 50,
+                                height: newHeight,
+                                x: 50 * 1000 / 2,
+                                y: newHeight * 1000 / 2,
+                                rotation: 0,
+                                opacity: 40,
+                                aspectRatioLocked: true,
+                              };
+                            });
+                          }
+                        }}
+                      >
+                        重設對齊
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 🗑️ 移除背景地圖 */}
+                  <button 
+                    className="danger" 
+                    style={{ width: '100%', marginTop: '10px', fontSize: '11px', padding: '6px' }}
+                    onClick={() => {
+                      if (window.confirm("確定要完全移除地圖背景圖嗎？")) {
+                        setBgImageSrc(null);
+                        localStorage.removeItem('agv_bg_image');
+                      }
+                    }}
+                  >
+                    🗑️ 移除背景地圖
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -492,7 +933,20 @@ function App() {
         </div>
 
         <div className="canvas-container">
-          <SimulatorCanvas telemetry={optimisticTelemetry} selectedAgvId={selectedAgvId} selectedObstacleId={selectedObId} autoTaskSourceId={autoTaskSource} showSearch={showSearch} onCanvasClick={handleCanvasClick} onCanvasDoubleClick={handleCanvasDoubleClick} onAgvSelect={(id) => { setSelectedAgvId(id); setSelectedObId(null); }} onCanvasRightClick={(x, y) => {
+          <SimulatorCanvas 
+            telemetry={optimisticTelemetry} 
+            selectedAgvId={selectedAgvId} 
+            selectedObstacleId={selectedObId} 
+            autoTaskSourceId={autoTaskSource}
+            showSearch={showSearch}
+            mapW={mapW}
+            mapH={mapH}
+            bgImageSrc={bgImageSrc}
+            bgSettings={bgSettings}
+            onCanvasClick={handleCanvasClick} 
+            onCanvasDoubleClick={handleCanvasDoubleClick} 
+            onAgvSelect={(id) => { setSelectedAgvId(id); setSelectedObId(null); }} 
+            onCanvasRightClick={(x, y) => {
               const perm = MODE_PERMISSIONS[activeTool].rightClick;
               if (perm === 'SET_TARGET') {
                   const targetId = selectedAgvId || (telemetry?.agvs.length ? telemetry.agvs[0].id : null);
@@ -500,7 +954,11 @@ function App() {
                   const clickedEq = telemetry.obstacles.find(ob => ob.type === 'equipment' && Math.sqrt((ob.x - x) ** 2 + (ob.y - y) ** 2) < (ob.radius || 1000));
                   const targetX = clickedEq ? clickedEq.x : snapToIntersection(x);
                   const targetY = clickedEq ? clickedEq.y : snapToIntersection(y);
-                  sendCommand('set_target', { agv_id: targetId, data: { x: targetX, y: targetY } });
+                   setOptimisticAgvTargets(prev => ({
+                     ...prev,
+                     [targetId]: { x: targetX, y: targetY, status: 'PLANNING', is_running: true }
+                   }));
+                   sendCommand('set_target', { agv_id: targetId, data: { x: targetX, y: targetY } });
               } else if (perm === 'CANCEL_TASK') {
                   setAutoTaskSource(null);
                   setSelectedAgvId(null);
@@ -509,7 +967,8 @@ function App() {
                   setSelectedAgvId(null);
                   setSelectedObId(null);
               }
-            }} />
+            }} 
+          />
         </div>
       </div>
 

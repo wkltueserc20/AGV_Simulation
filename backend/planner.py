@@ -10,7 +10,11 @@ class AStarPlanner:
         self.nodes_x = map_size // grid_size
         self.nodes_y = map_size // grid_size
 
-    def get_path(self, start: List[float], goal: List[float], obstacles: List[Dict[str, Any]], static_costmap=None, path_occupancy: Dict[str, List[Tuple[float, float]]] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int]]]:
+    def get_path(self, start: List[float], goal: List[float], obstacles: List[Dict[str, Any]], static_costmap=None, path_occupancy: Dict[str, List[Tuple[float, float]]] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int]], Optional[str]]:
+        # 依傳入 costmap 形狀動態取得網格尺寸，支援匯入地圖後的任意矩形世界邊界
+        if static_costmap is not None:
+            self.nodes_x, self.nodes_y = static_costmap.shape
+
         # --- A. 偵測離開邏輯 ---
         start_eq = None
         for ob in obstacles:
@@ -25,8 +29,11 @@ class AStarPlanner:
             angle_rad = (start_eq['docking_angle'] * math.pi) / 180.0
             exit_x = start_eq['x'] - math.cos(angle_rad) * 2000.0
             exit_y = start_eq['y'] - math.sin(angle_rad) * 2000.0
-            exit_segment = [(start[0], start[1]), (exit_x, exit_y)]
-            actual_start = [exit_x, exit_y]
+            exit_gx = int(round(exit_x / self.grid_size))
+            exit_gy = int(round(exit_y / self.grid_size))
+            if 0 <= exit_gx < self.nodes_x and 0 <= exit_gy < self.nodes_y:
+                exit_segment = [(start[0], start[1]), (exit_x, exit_y)]
+                actual_start = [exit_x, exit_y]
 
         # --- B. 偵測進入邏輯 ---
         target_eq = None
@@ -47,18 +54,27 @@ class AStarPlanner:
             runway_x = target_eq['x'] - math.cos(angle_rad) * 4000.0
             runway_y = target_eq['y'] - math.sin(angle_rad) * 4000.0
             
-            px_grid = int(round(runway_x / self.grid_size))
-            py_grid = int(round(runway_y / self.grid_size))
-            is_pre_safe = True
-            if static_costmap is not None:
-                if 0 <= px_grid < self.nodes_x and 0 <= py_grid < self.nodes_y:
-                    if static_costmap[px_grid, py_grid] >= 1000000:
-                        is_pre_safe = False
-            
-            if is_pre_safe:
+            def _approach_safe(px, py):
+                pgx = int(round(px / self.grid_size))
+                pgy = int(round(py / self.grid_size))
+                if not (0 <= pgx < self.nodes_x and 0 <= pgy < self.nodes_y):
+                    return False
+                if static_costmap is not None and static_costmap[pgx, pgy] >= 1000000:
+                    return False
+                return True
+
+            # 從最遠的 runway 依序退縮，找到第一個地圖內且不被封鎖的進場點
+            if _approach_safe(runway_x, runway_y):
                 goal = [runway_x, runway_y]
                 docking_tail = [(pre_x, pre_y), (gate_x, gate_y), (final_goal[0], final_goal[1])]
+            elif _approach_safe(pre_x, pre_y):
+                goal = [pre_x, pre_y]
+                docking_tail = [(gate_x, gate_y), (final_goal[0], final_goal[1])]
+            elif _approach_safe(gate_x, gate_y):
+                goal = [gate_x, gate_y]
+                docking_tail = [(final_goal[0], final_goal[1])]
             else:
+                # 全退縮到設備中心，依賴下方 ignore 半徑邏輯穿越封鎖環
                 docking_tail = [(final_goal[0], final_goal[1])]
         else:
             docking_tail = []
@@ -73,7 +89,7 @@ class AStarPlanner:
             if ob.get('type') == 'equipment':
                 dist_goal = math.sqrt((ob['x'] - final_goal[0])**2 + (ob['y'] - final_goal[1])**2)
                 dist_start = math.sqrt((ob['x'] - start[0])**2 + (ob['y'] - start[1])**2)
-                if dist_goal < 1000 or dist_start < 1200:
+                if dist_goal < 3000 or dist_start < 2000:
                     ignored_eq_ids.add(ob['id'])
                     continue
             filtered_obstacles.append(ob)
@@ -103,7 +119,7 @@ class AStarPlanner:
                 for ob in obstacles:
                     if ob['id'] in ignored_eq_ids:
                         dist_sq = (gx * self.grid_size - ob['x'])**2 + (gy * self.grid_size - ob['y'])**2
-                        if dist_sq < (ob.get('radius', 1000) + 200)**2:
+                        if dist_sq < (ob.get('radius', 1000) + 600)**2:
                             is_ignored = True; break
                 if is_ignored: penalty = 0.0 
             if penalty >= 1000000: return penalty
@@ -142,7 +158,34 @@ class AStarPlanner:
                         heapq.heappush(queue, (priority, h_cost, neighbor))
                         came_from[neighbor] = current
 
-        if goal_grid not in came_from: return [], visited
+        if goal_grid not in came_from:
+            in_bounds_goal = (0 <= goal_grid[0] < self.nodes_x and 0 <= goal_grid[1] < self.nodes_y)
+            in_bounds_start = (0 <= start_grid[0] < self.nodes_x and 0 <= start_grid[1] < self.nodes_y)
+            if not in_bounds_goal:
+                reason = (f"GOAL_OUT_OF_BOUNDS 目標座標超出地圖邊界 "
+                          f"goal=({goal[0]:.0f},{goal[1]:.0f}) goal_grid={goal_grid} "
+                          f"合法格範圍 x=[0,{self.nodes_x-1}] y=[0,{self.nodes_y-1}] "
+                          f"地圖={self.nodes_x*self.grid_size}x{self.nodes_y*self.grid_size}mm")
+            elif not in_bounds_start:
+                reason = (f"START_OUT_OF_BOUNDS 起點座標超出地圖邊界 "
+                          f"start=({actual_start[0]:.0f},{actual_start[1]:.0f}) start_grid={start_grid}")
+            else:
+                goal_blocked = (static_costmap is not None and
+                                static_costmap[goal_grid[0], goal_grid[1]] >= 1000000)
+                walkable = 0
+                for dx, dy in [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                    nb = (goal_grid[0] + dx, goal_grid[1] + dy)
+                    if 0 <= nb[0] < self.nodes_x and 0 <= nb[1] < self.nodes_y:
+                        if get_grid_penalty(nb[0], nb[1]) < 1000000:
+                            walkable += 1
+                if walkable == 0:
+                    reason = (f"GOAL_ENCLOSED 終點鄰格全被封鎖(邊界或障礙環)，A*無法進入終點 "
+                              f"goal=({goal[0]:.0f},{goal[1]:.0f}) goal_grid={goal_grid} "
+                              f"goal_blocked={goal_blocked}")
+                else:
+                    reason = (f"NO_PATH_FOUND 走廊被封鎖或搜尋耗盡 goal_grid={goal_grid} "
+                              f"goal_blocked={goal_blocked} 可走鄰格={walkable} 已探索節點={len(visited)}")
+            return [], visited, reason
         astar_path = []
         curr = goal_grid
         while curr is not None:
@@ -153,10 +196,11 @@ class AStarPlanner:
 
         full_path = exit_segment + astar_path
         if docking_tail: full_path.extend(docking_tail)
-        return full_path, visited
+        return full_path, visited, None
 
     def find_nearest_safe_spot(self, start_pos: Tuple[float, float], static_costmap, threat_paths: List[List[Tuple[float, float]]]) -> Optional[Tuple[float, float]]:
         if static_costmap is None: return None
+        self.nodes_x, self.nodes_y = static_costmap.shape
         start_grid = (int(start_pos[0] // self.grid_size), int(start_pos[1] // self.grid_size))
         queue = [start_grid]; visited = {start_grid}
         max_dist_grids = 30000 // self.grid_size 

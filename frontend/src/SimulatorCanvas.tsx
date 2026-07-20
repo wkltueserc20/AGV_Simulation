@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import type { Telemetry, AGVData } from './useSimulation';
 
 interface Props {
@@ -7,31 +7,76 @@ interface Props {
   selectedObstacleId: string | null;
   autoTaskSourceId: string | null;
   showSearch: boolean;
+  mapW?: number; // 世界寬度 (mm)
+  mapH?: number; // 世界高度 (mm)
+  bgImageSrc?: string | null;
+  bgSettings?: {
+    visible: boolean;
+    locked: boolean;
+    opacity: number;
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+    rotation: number;
+  } | null;
   onCanvasClick: (x: number, y: number) => void;
   onCanvasDoubleClick: (x: number, y: number) => void;
   onCanvasRightClick: (x: number, y: number) => void;
   onAgvSelect: (id: string) => void;
 }
 
-const MAP_SIZE = 50000;
-const GRID_SIZE = 200; 
+const GRID_SIZE = 200;
 
 // 工業站點圖示路徑
 const STATION_PATH = "M -50,-50 L 50,-50 L 50,-20 L 40,-20 L 40,20 L 50,20 L 50,50 L -50,50 L -50,20 L -40,20 L -40,-20 L -50,-20 Z";
 const stationPath2D = new Path2D(STATION_PATH);
 
-const SimulatorCanvas: React.FC<Props> = ({ 
+const SimulatorCanvas: React.FC<Props> = ({
   telemetry, selectedAgvId, selectedObstacleId, autoTaskSourceId, showSearch,
-  onCanvasClick, onCanvasDoubleClick, onCanvasRightClick, onAgvSelect 
+  mapW: propMapW, mapH: propMapH,
+  bgImageSrc, bgSettings,
+  onCanvasClick, onCanvasDoubleClick, onCanvasRightClick, onAgvSelect
 }) => {
+  // 世界邊界尺寸 (mm)；未提供時退回 50000 預設
+  const mapW = (typeof propMapW === 'number' && !isNaN(propMapW) && propMapW > 0) ? propMapW : 50000;
+  const mapH = (typeof propMapH === 'number' && !isNaN(propMapH) && propMapH > 0) ? propMapH : 50000;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const staticNeedsUpdate = useRef(true);
 
-  const [dimensions, setDimensions] = useState({ width: 750, height: 750 });
+  const [boxSize, setBoxSize] = useState(750);
   const [viewState, setViewState] = useState({ offsetX: 0, offsetY: 0 });
+  const hasDragged = useRef(false);
   
+  const [loadedBgImage, setLoadedBgImage] = useState<HTMLImageElement | null>(null);
+
+  // 監聽圖片更動進行非同步載入
+  useEffect(() => {
+    if (bgImageSrc) {
+      const img = new Image();
+      img.onload = () => {
+        setLoadedBgImage(img);
+        staticNeedsUpdate.current = true;
+      };
+      img.onerror = () => {
+        console.error("Failed to load simulator background image.");
+        setLoadedBgImage(null);
+        staticNeedsUpdate.current = true;
+      };
+      img.src = bgImageSrc;
+    } else {
+      setLoadedBgImage(null);
+      staticNeedsUpdate.current = true;
+    }
+  }, [bgImageSrc]);
+
+  // 監聽背景定位參數更動
+  useEffect(() => {
+    staticNeedsUpdate.current = true;
+  }, [bgSettings]);
+
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
 
@@ -52,13 +97,12 @@ const SimulatorCanvas: React.FC<Props> = ({
       staticNeedsUpdate.current = true;
   }, [selectedObstacleId]);
 
-  // 處理畫布大小
+  // 處理畫布大小 (可用正方形空間)
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
         const { clientWidth, clientHeight } = containerRef.current;
-        const size = Math.min(clientWidth, clientHeight) - 40;
-        setDimensions({ width: size, height: size });
+        setBoxSize(Math.min(clientWidth, clientHeight) - 40);
         staticNeedsUpdate.current = true;
       }
     };
@@ -67,20 +111,33 @@ const SimulatorCanvas: React.FC<Props> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 依世界長寬比決定畫布尺寸，確保像素為正方 (不變形)
+  const dimensions = useMemo(() => {
+    const b = Math.max(50, boxSize);
+    const aspect = mapW / mapH;
+    if (aspect >= 1) return { width: b, height: Math.round(b / aspect) };
+    return { width: Math.round(b * aspect), height: b };
+  }, [boxSize, mapW, mapH]);
+
+  // 地圖尺寸變動時重繪靜態層
+  useEffect(() => { staticNeedsUpdate.current = true; }, [dimensions.width, dimensions.height]);
+
   const worldToCanvas = useCallback((x: number, y: number, w: number, h: number, vs: any) => {
-    const scale = (w / MAP_SIZE);
+    const scale = (w / mapW);
     return { cx: (x * scale) + vs.offsetX, cy: h - (y * scale) + vs.offsetY };
-  }, []);
+  }, [mapW]);
 
   const canvasToWorld = useCallback((cx: number, cy: number, w: number, h: number, vs: any) => {
-    const scale = (w / MAP_SIZE);
+    const scale = (w / mapW);
     return { x: (cx - vs.offsetX) / scale, y: (h + vs.offsetY - cy) / scale };
-  }, []);
+  }, [mapW]);
 
   // --- 事件處理函式 ---
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+    // 支援中鍵 (1)、Alt+左鍵 (0 + alt)、右鍵 (2) 進行平移
+    if (e.button === 1 || (e.button === 0 && e.altKey) || e.button === 2) {
         isDragging.current = true;
+        hasDragged.current = false;
         lastMousePos.current = { x: e.clientX, y: e.clientY };
         e.preventDefault();
     }
@@ -90,13 +147,21 @@ const SimulatorCanvas: React.FC<Props> = ({
     if (isDragging.current) {
         const dx = e.clientX - lastMousePos.current.x;
         const dy = e.clientY - lastMousePos.current.y;
+        
+        // 如果移動超過 3 像素，則判定為「拖曳平移」，以防止右鍵拖曳觸發點擊行為
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+            hasDragged.current = true;
+        }
+        
         setViewState(prev => ({ ...prev, offsetX: prev.offsetX + dx, offsetY: prev.offsetY + dy }));
         lastMousePos.current = { x: e.clientX, y: e.clientY };
         staticNeedsUpdate.current = true;
     }
   };
 
-  const handleMouseUp = () => { isDragging.current = false; };
+  const handleMouseUp = () => {
+    isDragging.current = false;
+  };
 
   const handleInteraction = (e: React.MouseEvent<HTMLCanvasElement>, callback: (x: number, y: number) => void) => {
     const canvas = canvasRef.current; if (!canvas) return;
@@ -113,17 +178,44 @@ const SimulatorCanvas: React.FC<Props> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const scale = (w / MAP_SIZE);
+    const scale = (w / mapW);
     ctx.fillStyle = '#0d0e12'; ctx.fillRect(0, 0, w, h);
 
-    const pTopLeft = worldToCanvas(0, MAP_SIZE, w, h, vs);
-    const pBottomRight = worldToCanvas(MAP_SIZE, 0, w, h, vs);
+    // 繪製背景地圖 (在網格與障礙物最底層)
+    if (loadedBgImage && bgSettings && bgSettings.visible) {
+      const opacity = typeof bgSettings.opacity === 'number' && !isNaN(bgSettings.opacity) ? bgSettings.opacity : 40;
+      const x = typeof bgSettings.x === 'number' && !isNaN(bgSettings.x) ? bgSettings.x : mapW / 2;
+      const y = typeof bgSettings.y === 'number' && !isNaN(bgSettings.y) ? bgSettings.y : mapH / 2;
+      const rotation = typeof bgSettings.rotation === 'number' && !isNaN(bgSettings.rotation) ? bgSettings.rotation : 0;
+      const width = typeof bgSettings.width === 'number' && !isNaN(bgSettings.width) ? bgSettings.width : 50;
+      const height = typeof bgSettings.height === 'number' && !isNaN(bgSettings.height) ? bgSettings.height : 50;
+
+      ctx.save();
+      ctx.globalAlpha = opacity / 100;
+      
+      // 計算背景圖中心點之畫布座標
+      const { cx, cy } = worldToCanvas(x, y, w, h, vs);
+      
+      // 進行平移與逆時針旋轉對齊 (角度取負值與 AGV 坐標系一致)
+      ctx.translate(cx, cy);
+      ctx.rotate(-rotation * Math.PI / 180);
+      
+      const imgW = width * 1000 * scale;   // 寬度 m -> mm -> px
+      const imgH = height * 1000 * scale;  // 高度 m -> mm -> px
+      
+      // 以中心點居中繪製地圖
+      ctx.drawImage(loadedBgImage, -imgW / 2, -imgH / 2, imgW, imgH);
+      ctx.restore();
+    }
+
+    const pTopLeft = worldToCanvas(0, mapH, w, h, vs);
+    const pBottomRight = worldToCanvas(mapW, 0, w, h, vs);
     ctx.strokeStyle = '#2d333b'; ctx.lineWidth = 2;
     ctx.strokeRect(pTopLeft.cx, pTopLeft.cy, pBottomRight.cx - pTopLeft.cx, pBottomRight.cy - pTopLeft.cy);
 
     ctx.fillStyle = '#3a3f4b';
-    for (let x = 0; x <= MAP_SIZE; x += 5000) {
-      for (let y = 0; y <= MAP_SIZE; y += 5000) {
+    for (let x = 0; x <= mapW; x += 5000) {
+      for (let y = 0; y <= mapH; y += 5000) {
         const { cx, cy } = worldToCanvas(x, y, w, h, vs);
         if (cx >= 0 && cx <= w && cy >= 0 && cy <= h) {
             ctx.beginPath(); ctx.arc(cx, cy, 1.5, 0, Math.PI * 2); ctx.fill();
@@ -167,7 +259,7 @@ const SimulatorCanvas: React.FC<Props> = ({
     if (!ctx) return;
 
     const now = performance.now();
-    const scale = (w / MAP_SIZE);
+    const scale = (w / mapW);
 
     if (staticNeedsUpdate.current) updateStaticLayer(w, h, vs, currentTelemetry);
     if (staticCanvasRef.current) ctx.drawImage(staticCanvasRef.current, 0, 0);
@@ -229,6 +321,23 @@ const SimulatorCanvas: React.FC<Props> = ({
           if (i === 0) ctx.moveTo(cp.cx, cp.cy); else ctx.lineTo(cp.cx, cp.cy);
         });
         ctx.stroke(); ctx.restore();
+      }
+
+      if (isSelected && (!a.path || a.path.length === 0 || a.status === 'PLANNING')) {
+        const distToTarget = Math.sqrt((a.x - a.target.x) ** 2 + (a.y - a.target.y) ** 2);
+        if (distToTarget > 100) {
+            const p1 = worldToCanvas(a.x, a.y, w, h, vs);
+            const p2 = worldToCanvas(a.target.x, a.target.y, w, h, vs);
+            ctx.save(); 
+            ctx.setLineDash([4, 4]); 
+            ctx.strokeStyle = '#00f2ff'; 
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); 
+            ctx.moveTo(p1.cx, p1.cy); 
+            ctx.lineTo(p2.cx, p2.cy); 
+            ctx.stroke(); 
+            ctx.restore();
+        }
       }
     });
 
@@ -335,7 +444,10 @@ const SimulatorCanvas: React.FC<Props> = ({
       const size = (ob.radius || 1000) * scale;
       const colors: Record<string, string> = { 'normal': '#ffd700', 'running': '#39ff14', 'error': '#ff4d4d' };
       const baseColor = colors[ob.status || 'running'] || '#39ff14';
+      const dockingAngle = ob.docking_angle !== undefined ? ob.docking_angle : 0;
+      const angleRad = (dockingAngle * Math.PI) / 180;
       ctx.save(); ctx.translate(cx, cy);
+      ctx.rotate(-angleRad + Math.PI);
       const iconScale = size / 50; ctx.scale(iconScale, iconScale);
       ctx.globalAlpha = 0.7; ctx.fillStyle = (isSelected || isAutoSource) ? '#ff6600' : baseColor;
       ctx.fill(stationPath2D); ctx.globalAlpha = 1.0; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 / iconScale;
@@ -354,7 +466,7 @@ const SimulatorCanvas: React.FC<Props> = ({
     });
 
     animationFrameId.current = requestAnimationFrame(render);
-  }, [worldToCanvas, dimensions, viewState, showSearch, autoTaskSourceId]);
+  }, [worldToCanvas, dimensions, viewState, showSearch, autoTaskSourceId, mapW, mapH]);
 
   useEffect(() => {
     animationFrameId.current = requestAnimationFrame(render);
@@ -380,7 +492,13 @@ const SimulatorCanvas: React.FC<Props> = ({
             }
         }} 
         onDoubleClick={(e) => handleInteraction(e, onCanvasDoubleClick)}
-        onContextMenu={(e) => { e.preventDefault(); handleInteraction(e, onCanvasRightClick); }} 
+        onContextMenu={(e) => { 
+          e.preventDefault(); 
+          // 僅在沒有發生拖曳平移的情況下，才判定為右鍵點擊，防止干擾右鍵平移操作
+          if (!hasDragged.current) {
+            handleInteraction(e, onCanvasRightClick); 
+          }
+        }} 
       />
       <button style={{ position: 'absolute', bottom: '20px', right: '20px', opacity: 0.6 }} onClick={() => { setViewState({ offsetX: 0, offsetY: 0 }); staticNeedsUpdate.current = true; }}>
         RESET VIEW

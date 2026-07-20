@@ -119,19 +119,19 @@ class AGV:
     def _on_planning_done(self, future):
         try:
             res = future.result()
-            if res and res[0]: # 檢查路徑是否非空
-                path, visited = res
+            path, visited, reason = res
+            if path: # 檢查路徑是否非空
                 self.global_path = path
                 self._last_closest_idx = 0
                 self.visited_nodes = visited
                 self.retry_count = 0
-                
+
                 # 如果是正在避讓中，保持 YIELDING
                 if self.status == AGVStatus.THINKING:
                     self.status = AGVStatus.YIELDING
                 elif self.status == AGVStatus.PLANNING:
                     self.status = AGVStatus.EXECUTING
-                
+
                 # 一般狀態流轉
                 if self.status in [AGVStatus.PLANNING, AGVStatus.EXECUTING, AGVStatus.IDLE]:
                     self.status = AGVStatus.EXECUTING if (self.is_running or self.target != {"x": self.x, "y": self.y}) else AGVStatus.IDLE
@@ -139,17 +139,21 @@ class AGV:
                     self.is_running = True
             else:
                 # 規劃失敗處理 (可能是暫時性阻塞)
+                tgt = self.target or {}
+                loc = (f"reason={reason} target=({tgt.get('x', 0):.0f},{tgt.get('y', 0):.0f}) "
+                       f"pos=({self.x:.0f},{self.y:.0f})")
                 if self.status in [AGVStatus.PLANNING, AGVStatus.THINKING]:
                     if self.retry_count < 3:
-                        logger.warning(f"AGV {self.id} path failed. Entering BLOCKED (retry {self.retry_count + 1}/3)")
+                        logger.warning(f"AGV {self.id} 路徑規劃失敗. {loc} 進入 BLOCKED (retry {self.retry_count + 1}/3)")
                         self.status = AGVStatus.BLOCKED
                         self.retry_count += 1
                         self.wait_start_time = time.time()
                     else:
-                        logger.error(f"AGV {self.id} path failed after maximum retries. Entering ERROR.")
+                        logger.error(f"AGV {self.id} 路徑規劃失敗(已達最大重試). {loc} 進入 ERROR.")
                         self.status = AGVStatus.ERROR
-                        self.retry_count = 0 
+                        self.retry_count = 0
                 else:
+                    logger.warning(f"AGV {self.id} 路徑規劃失敗. {loc} 進入 STUCK.")
                     self.status = AGVStatus.STUCK
         except Exception as e:
             logger.error(f"Planning Future Error: {e}")

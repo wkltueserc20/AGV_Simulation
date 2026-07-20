@@ -16,3 +16,6 @@ frontend/dist-ssr
 # OS
 .DS_Store
 Thumbs.db
+
+# Agent tooling
+.agent/

@@ -28,13 +28,15 @@ class World:
         self.reserved_havens: Dict[str, Tuple[float, float]] = {} 
         self.storage_file = "obstacles.json"
         self.agvs_storage_file = "agvs.json"
-        
+        self.map_config_file = "map_config.json"
+
         # 多進程規劃器
         self.executor = ProcessPoolExecutor(max_workers=4)
-        
+
         self.grid_res = 200.0
-        self.nx = int(width // self.grid_res)
-        self.ny = int(height // self.grid_res)
+        self.load_map_config()  # 可能依匯入地圖設定覆寫 self.width / self.height
+        self.nx = int(self.width // self.grid_res)
+        self.ny = int(self.height // self.grid_res)
         
         self.static_costmap = np.zeros((self.nx, self.ny))
         self._map_lock = threading.Lock()
@@ -80,6 +82,47 @@ class World:
             except Exception as e:
                 logger.error(f"Failed to load obstacles: {e}")
                 self.obstacles = []
+
+    def save_map_config(self):
+        try:
+            with open(self.map_config_file, 'w', encoding='utf-8') as f:
+                json.dump({"width": self.width, "height": self.height}, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save map config: {e}")
+
+    def load_map_config(self):
+        if os.path.exists(self.map_config_file):
+            try:
+                with open(self.map_config_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                w = float(data.get("width", self.width))
+                h = float(data.get("height", self.height))
+                if w > 0 and h > 0:
+                    self.width = w
+                    self.height = h
+            except Exception as e:
+                logger.error(f"Failed to load map config: {e}")
+
+    def set_map_size(self, width: float, height: float):
+        """依匯入地圖的真實物理尺寸 (mm) 調整世界邊界，並重算 costmap。"""
+        try:
+            w = float(width)
+            h = float(height)
+        except (TypeError, ValueError):
+            return
+        if w <= 0 or h <= 0:
+            return
+        new_nx = int(w // self.grid_res)
+        new_ny = int(h // self.grid_res)
+        if new_nx == self.nx and new_ny == self.ny and w == self.width and h == self.height:
+            return  # 尺寸未變，避免無謂重算
+        self.width = w
+        self.height = h
+        self.nx = new_nx
+        self.ny = new_ny
+        self.save_map_config()
+        self.update_static_costmap()
+        logger.info(f"Map size set to {w:.0f}x{h:.0f}mm (grid {self.nx}x{self.ny}).")
 
     def save_agvs(self):
         try:
@@ -166,31 +209,41 @@ class World:
     def _compute_costmap_task(self, obs_list):
         self._is_updating = True
         try:
-            new_map = np.zeros((self.nx, self.ny))
-            obs_geoms = []
+            # 建立網格座標矩陣 (shape: nx, ny)
+            x_coords = np.arange(self.nx) * self.grid_res
+            y_coords = np.arange(self.ny) * self.grid_res
+            wx, wy = np.meshgrid(x_coords, y_coords, indexing='ij')
+
+            # 初始化最小距離矩陣為與邊界的最小距離
+            min_d = np.minimum(
+                np.minimum(wx, self.width - wx),
+                np.minimum(wy, self.height - wy)
+            )
+
+            # 向量化計算所有障礙物的最小距離
             for ob in obs_list:
                 if ob['type'] == 'rectangle':
                     w, h = ob.get('width', 1000), ob.get('height', 1000)
-                    obs_geoms.append(('rect', ob['x'] - w/2, ob['y'] - h/2, ob['x'] + w/2, ob['y'] + h/2))
+                    x1, y1 = ob['x'] - w/2, ob['y'] - h/2
+                    x2, y2 = ob['x'] + w/2, ob['y'] + h/2
+                    
+                    dx = np.maximum(0, np.maximum(x1 - wx, wx - x2))
+                    dy = np.maximum(0, np.maximum(y1 - wy, wy - y2))
+                    d_rect = np.sqrt(dx**2 + dy**2)
+                    min_d = np.minimum(min_d, d_rect)
                 else:
-                    obs_geoms.append(('circle', ob['x'], ob['y'], ob.get('radius', 500)))
+                    ox, oy = ob['x'], ob['y']
+                    r = ob.get('radius', 500)
+                    d_circle = np.sqrt((wx - ox)**2 + (wy - oy)**2) - r
+                    min_d = np.minimum(min_d, d_circle)
+
+            # 根據最小距離設定代價地圖
+            new_map = np.zeros((self.nx, self.ny))
+            new_map[min_d < 550] = 1000000.0
             
-            for gx in range(self.nx):
-                wx = gx * self.grid_res
-                for gy in range(self.ny):
-                    wy = gy * self.grid_res
-                    min_d = min(wx, self.width - wx, wy, self.height - wy)
-                    for kind, *data in obs_geoms:
-                        if kind == 'rect':
-                            dx = max(data[0] - wx, 0, wx - data[2])
-                            dy = max(data[1] - wy, 0, wy - data[3])
-                            d = math.sqrt(dx**2 + dy**2)
-                        else:
-                            d = math.sqrt((data[0] - wx)**2 + (data[1] - wy)**2) - data[2]
-                        if d < min_d: min_d = d
-                    if min_d < 550: new_map[gx, gy] = 1000000.0
-                    elif min_d < 2000: new_map[gx, gy] = (2000.0 / min_d) ** 4
-            
+            mask = (min_d >= 550) & (min_d < 2000)
+            new_map[mask] = (2000.0 / min_d[mask]) ** 4
+
             with self._map_lock:
                 self.static_costmap = new_map
             logger.info("Costmap computation complete.")
