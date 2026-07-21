@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import threading
 import queue
@@ -272,10 +273,15 @@ def disk_saver_thread():
         except Exception as e:
             logger.error(f"Disk saver error: {e}")
 
-# 服務打包好的前端（frontend/dist）：本機一鍵啟動時前後端同源同埠。
+# 服務打包好的前端（frontend/dist）：一鍵啟動 / 打包 exe 時前後端同源同埠。
 # 必須放在所有 API/WebSocket 路由「之後」掛載，"/" 的 StaticFiles 才不會蓋掉 /ws。
-# html=True 讓 "/" 回傳 index.html。dist 不存在（尚未 build）時略過，僅跑 API。
-_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+# html=True 讓 "/" 回傳 index.html。
+# 打包成 exe（frozen）時，dist 被 PyInstaller 解到 sys._MEIPASS/frontend/dist。
+if getattr(sys, "frozen", False):
+    _DIST = os.path.join(sys._MEIPASS, "frontend", "dist")  # type: ignore[attr-defined]
+else:
+    _DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+
 if os.path.isdir(_DIST):
     app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")
 else:
@@ -283,4 +289,8 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
+    # 打包成 exe 時，啟動後自動開瀏覽器
+    if getattr(sys, "frozen", False):
+        import threading, webbrowser
+        threading.Timer(2.0, lambda: webbrowser.open("http://localhost:8000/")).start()
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")

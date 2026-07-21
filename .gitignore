@@ -3,6 +3,11 @@ backend/venv/
 backend/__pycache__/
 *.py[cod]
 
+# PyInstaller 打包產物（用 build_exe.bat 重新產生，不進版控）
+backend/build/
+backend/dist/
+backend/*.spec
+
 # Node
 frontend/node_modules/
 frontend/dist/
