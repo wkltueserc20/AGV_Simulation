@@ -10,10 +10,10 @@ interface Props {
 function TelemetryPanel({ telemetry, selectedAgv, sendCommand }: Props) {
   return (
     <div className="sidebar right-wing">
-      <h2>Telemetry</h2>
+      <h2>遙測 Telemetry</h2>
       {selectedAgv ? (
         <div className="section">
-          <h3>Status: {selectedAgv.id}</h3>
+          <h3>狀態 · {selectedAgv.id}</h3>
           <div className="telemetry-grid">
             <div className="tele-item"><label>POS X</label><span>{Math.round(selectedAgv.x)}mm</span></div>
             <div className="tele-item"><label>POS Y</label><span>{Math.round(selectedAgv.y)}mm</span></div>
@@ -23,11 +23,11 @@ function TelemetryPanel({ telemetry, selectedAgv, sendCommand }: Props) {
             <div className="tele-item"><label>R_RPM</label><span style={{ color: 'var(--accent-green)' }}>{Math.round(selectedAgv.r_rpm)}</span></div>
           </div>
           <div className="item-card" style={{ marginTop: '20px', borderColor: 'rgba(57, 255, 20, 0.2)' }}>
-            <div style={{ fontSize: '11px', color: '#8b949e', marginBottom: '8px' }}>Active Target</div>
+            <div style={{ fontSize: '11px', color: '#8b949e', marginBottom: '8px' }}>目前目標 Active Target</div>
             <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#39ff14' }}>X: {selectedAgv.target.x} Y: {selectedAgv.target.y}</div>
           </div>
         </div>
-      ) : <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8b949e', fontSize: '12px' }}>Select an AGV to monitor real-time telemetry</div>}
+      ) : <div className="empty-hint">點選一台 AGV 以檢視即時遙測數據</div>}
 
       <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>

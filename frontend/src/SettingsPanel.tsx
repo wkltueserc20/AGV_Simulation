@@ -23,7 +23,7 @@ function SettingsPanel({
 }: Props) {
   return (
     <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
-      <h3>Settings: {selectedObstacle.type === 'equipment' ? 'Equipment' : 'Object'}</h3>
+      <h3>設定 · {selectedObstacle.type === 'equipment' ? '設備 Equipment' : '物件 Object'}</h3>
       <div className="item-card active">
         <div className="telemetry-grid">
           <div className="tele-item"><label>ID</label>
@@ -102,7 +102,7 @@ function SettingsPanel({
             });
             sendCommand('remove_obstacle', { id: selectedObstacle.id });
             setSelectedObId(null);
-          }}>DELETE</button>
+          }}>🗑️ 刪除 DELETE</button>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import type { AGVData } from './useSimulation';
 import { formatSimTime } from './utils';
+import { statusColor } from './status';
 
 interface Props {
   agvs: AGVData[];
@@ -11,19 +12,16 @@ interface Props {
   setAddAgvMode: (v: boolean) => void;
 }
 
-const statusColor = (status: string) =>
-  status === 'EXECUTING' ? '#39ff14'
-  : status === 'PLANNING' ? '#ffc107'
-  : status === 'EVADING' ? '#bb86fc'
-  : status === 'STUCK' ? '#ff4d4d'
-  : '#8b949e';
-
 function FleetPanel({ agvs, selectedAgvId, onSelectAgv, sendCommand, canDeployAgv, addAgvMode, setAddAgvMode }: Props) {
   return (
     <div className="section">
-      <h3>Fleet Status ({agvs.length})</h3>
+      <h3>車隊狀態 Fleet ({agvs.length})</h3>
       <div className="fleet-list">
-        {agvs.map(a => (
+        {agvs.length === 0 ? (
+          <div className="empty-hint">
+            尚無 AGV。<br />切到 <b>⭐ 設備</b>模式，按下方「部署」再點畫布空白處放置第一台。
+          </div>
+        ) : agvs.map(a => (
           <div key={a.id} className={`item-card ${selectedAgvId === a.id ? 'active' : ''}`} onClick={() => onSelectAgv(a.id)}>
             <div className="item-header">
               <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -37,8 +35,8 @@ function FleetPanel({ agvs, selectedAgvId, onSelectAgv, sendCommand, canDeployAg
               </span>
             </div>
             <div style={{ marginTop: '8px', display: 'flex', gap: '5px' }}>
-              <button style={{ flex: 1, fontSize: '9px', padding: '4px 2px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444' }} onClick={(e) => { e.stopPropagation(); sendCommand('force_idle', { target_id: a.id }); }}>FORCE IDLE</button>
-              <button style={{ flex: 1, fontSize: '9px', padding: '4px 2px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444' }} onClick={(e) => { e.stopPropagation(); sendCommand(a.is_running ? 'pause' : 'start', { target_id: a.id }); }}>{a.is_running ? 'PAUSE' : 'START'}</button>
+              <button title="強制回到待命狀態" style={{ flex: 1, fontSize: '9px', padding: '4px 2px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444' }} onClick={(e) => { e.stopPropagation(); sendCommand('force_idle', { target_id: a.id }); }}>強制待命</button>
+              <button style={{ flex: 1, fontSize: '9px', padding: '4px 2px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444' }} onClick={(e) => { e.stopPropagation(); sendCommand(a.is_running ? 'pause' : 'start', { target_id: a.id }); }}>{a.is_running ? '暫停' : '啟動'}</button>
             </div>
             {a.last_travel_time !== undefined && a.last_travel_time > 0 && (
               <div style={{ marginTop: '6px', fontSize: '9px', color: '#8b949e', borderTop: '1px solid #30363d', paddingTop: '4px' }}>
@@ -50,7 +48,7 @@ function FleetPanel({ agvs, selectedAgvId, onSelectAgv, sendCommand, canDeployAg
       </div>
       {canDeployAgv && (
         <button className={`primary ${addAgvMode ? 'warning' : ''}`} style={{ width: '100%', marginTop: '10px' }} onClick={() => setAddAgvMode(!addAgvMode)}>
-          {addAgvMode ? 'CANCEL' : '+ DEPLOY NEW AGV'}
+          {addAgvMode ? '取消部署 CANCEL' : '+ 部署新 AGV'}
         </button>
       )}
     </div>

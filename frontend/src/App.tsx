@@ -9,6 +9,8 @@ import Toolbar from './Toolbar';
 import type { ToolMode } from './Toolbar';
 import FleetPanel from './FleetPanel';
 import SettingsPanel from './SettingsPanel';
+import StatusLegend from './StatusLegend';
+import HelpPanel from './HelpPanel';
 import { toast, Toaster } from './toast';
 import { snapToCenter, snapToIntersection } from './utils';
 import './App.css';
@@ -31,6 +33,10 @@ function App() {
   const [activeTool, setActiveTool] = useState<ToolMode>('SELECT');
   const [showSearch, setShowSearch] = useState(true);
   const [globalRpm, setGlobalRpm] = useState(3000);
+
+  // 說明面板：首次進入自動顯示一次
+  const [showHelp, setShowHelp] = useState(() => !localStorage.getItem('agv_help_seen'));
+  useEffect(() => { if (showHelp) localStorage.setItem('agv_help_seen', '1'); }, [showHelp]);
 
   // 背景地圖相關狀態
   const [bgImageSrc, setBgImageSrc] = useState<string | null>(() => {
@@ -470,10 +476,11 @@ function App() {
   return (
     <div className="app-container">
       <Toaster />
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
       <div className="sidebar left-wing">
         <h2>Multi-AGV Pro</h2>
         <div className="section">
-          <h3>System Control</h3>
+          <h3>系統控制 System</h3>
           <div className={`status-badge ${isConnected ? 'online' : 'offline'}`}>{isConnected ? '● CONNECTED' : '○ DISCONNECTED'}</div>
           <div className="btn-group-grid">
             {[1, 10, 20, 30].map(m => (
@@ -482,10 +489,10 @@ function App() {
           </div>
           <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <input type="checkbox" id="show-search" checked={showSearch} onChange={(e) => setShowSearch(e.target.checked)} />
-            <label htmlFor="show-search" style={{ fontSize: '11px', color: '#8b949e', cursor: 'pointer' }}>Search Debug Layer</label>
+            <label htmlFor="show-search" style={{ fontSize: '11px', color: '#8b949e', cursor: 'pointer' }}>搜尋除錯層 Search Debug</label>
           </div>
           <div style={{ marginTop: '15px', borderTop: '1px solid #30363d', paddingTop: '12px' }}>
-            <label style={{ fontSize: '10px', color: '#8b949e', display: 'block', marginBottom: '5px' }}>GLOBAL SPEED LIMIT: {globalRpm} RPM</label>
+            <label style={{ fontSize: '10px', color: '#8b949e', display: 'block', marginBottom: '5px' }}>全域速度上限 · {globalRpm} RPM</label>
             <input 
               type="range" 
               min="0" max="3000" step="100" 
@@ -499,6 +506,8 @@ function App() {
             />
           </div>
         </div>
+
+        <StatusLegend />
 
         <FleetPanel
           agvs={telemetry?.agvs ?? []}
@@ -527,14 +536,14 @@ function App() {
 
         {selectedAgv && (
           <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
-            <h3>AGV Actions: {selectedAgv.id}</h3>
-            {MODE_PERMISSIONS[activeTool].canAdd === 'EQUIPMENT' && <button className="danger" style={{ width: '100%', marginTop: '5px', opacity: 0.6 }} onClick={() => sendCommand('remove_agv', { agv_id: selectedAgvId })}>REMOVE AGV</button>}
+            <h3>AGV 操作 · {selectedAgv.id}</h3>
+            {MODE_PERMISSIONS[activeTool].canAdd === 'EQUIPMENT' && <button className="danger" style={{ width: '100%', marginTop: '5px', opacity: 0.6 }} onClick={() => sendCommand('remove_agv', { agv_id: selectedAgvId })}>移除 AGV</button>}
           </div>
         )}
 
         <div className="section">
-          <h3>Global Cleanup</h3>
-          <button className="danger" disabled={!MODE_PERMISSIONS[activeTool].canDelete} style={{ width: '100%' }} onClick={() => sendCommand('clear_obstacles')}>WIPE ALL OBSTACLES</button>
+          <h3>全域清除 Cleanup</h3>
+          <button className="danger" disabled={!MODE_PERMISSIONS[activeTool].canDelete} style={{ width: '100%' }} onClick={() => sendCommand('clear_obstacles')}>🗑️ 清除所有障礙物</button>
         </div>
 
         <div className="section">
@@ -569,6 +578,7 @@ function App() {
           selectedAgvId={selectedAgvId}
           isConnected={isConnected}
           sendCommand={sendCommand}
+          onShowHelp={() => setShowHelp(true)}
         />
 
         <div className="mode-status-bar">
