@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import multiprocessing
 import os
 import sys
 import time
@@ -16,6 +17,11 @@ from fastapi.staticfiles import StaticFiles
 
 from world import World
 from agv import AGV
+
+# 打包成 exe（frozen）後，planner 用的 ProcessPoolExecutor 會 spawn 子行程重跑本檔。
+# freeze_support() 必須在建立 World()（內含 ProcessPoolExecutor）之前呼叫，
+# 讓子行程被攔截為 worker 而非重啟整個伺服器，否則會 BrokenProcessPool。
+multiprocessing.freeze_support()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
