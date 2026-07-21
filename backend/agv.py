@@ -102,13 +102,17 @@ class AGV:
         return 100
 
     def to_dict(self) -> Dict[str, Any]:
+        # 遙測抽樣：path 每 2 點取 1（保留終點確保路徑畫到目標）；
+        # visited 每 3 點取 1（僅供搜尋除錯熱區，密度變疏不影響功能）。降低廣播 payload。
+        path = self.global_path
+        sampled_path = (path[::2] + [path[-1]]) if len(path) > 2 else path
         return {
             "id": self.id, "x": self.x, "y": self.y, "theta": self.theta,
             "v": self.v, "omega": self.omega, "l_rpm": self.l_rpm, "r_rpm": self.r_rpm,
             "target": self.target, "status": self.status, "mode": self.mode, "has_goods": self.has_goods,
             "is_running": self.is_running, "is_planning": self.is_planning,
-            "path": self.global_path, 
-            "visited": self.visited_nodes,
+            "path": sampled_path,
+            "visited": self.visited_nodes[::3],
             "max_rpm": self.max_rpm, "culprit_id": self.culprit_id,
             "evasion_target": self.evasion_target, "current_task": self.current_task,
             "yielding_to_ids": list(self.yielding_to_ids),
@@ -256,7 +260,7 @@ class AGV:
                         self.has_goods = True
                         if self.current_task:
                             source = next((o for o in world.obstacles if o["id"] == self.current_task["source_id"]), None)
-                            if source: source["has_goods"] = False; world.save_obstacles()
+                            if source: source["has_goods"] = False; world.mark_obstacles_dirty()
                             tid = self.current_task.get("target_id")
                             if tid:
                                 target_ob = next((o for o in world.obstacles if o["id"] == tid), None)
@@ -273,14 +277,16 @@ class AGV:
                         self.has_goods = False
                         if self.current_task:
                             target_ob = next((o for o in world.obstacles if o["id"] == self.current_task["target_id"]), None)
-                            if target_ob: target_ob["has_goods"] = True; world.save_obstacles()
+                            if target_ob: target_ob["has_goods"] = True; world.mark_obstacles_dirty()
                             world.complete_task(self.current_task.get("source_id"), self.current_task["target_id"], execution_time=self.current_travel_time)
                         self.last_travel_time = self.current_travel_time; self.current_travel_time = 0.0
                         self.status = AGVStatus.IDLE; self.is_running = False; self.current_task = None
             return
 
+        # 一次性動態障礙快照：本次 update 內其他 AGV 位置不變，該幀各檢查點共用
+        all_obs = world.obstacles + world.get_dynamic_obstacles(exclude_agv_id=self.id)
+
         if self.replan_needed and self.is_running and not self.is_planning:
-            all_obs = world.obstacles + world.get_dynamic_obstacles(exclude_agv_id=self.id)
             self._async_replan(all_obs, world.static_costmap, world)
 
         self._last_compute_time += dt
@@ -303,7 +309,6 @@ class AGV:
 
         if self._last_compute_time >= 0.05:
             self._last_compute_time = 0.0
-            all_obs = world.obstacles + world.get_dynamic_obstacles(exclude_agv_id=self.id)
             lookahead = max(1, int(4 + abs(self.v) / 100.0))
             target_wp = self.global_path[min(closest_idx + lookahead, len(self.global_path)-1)]
             is_docking = False; target_angle = None; final_wp = self.global_path[-1]
@@ -325,14 +330,13 @@ class AGV:
                 elif dist <= 1950: force_forward = True
             if goto_ctrl:
                 ignore_id = None # Simplified for MVP
-                bv, bo, culprit = self.controller.compute_command(self.x, self.y, self.theta, self.v, self.omega, target_wp, max_speed, all_obs, dt=0.05, force_forward=force_forward, ignore_id=ignore_id, obstacle_geoms=world.obstacle_geoms)
+                bv, bo, culprit = self.controller.compute_command(self.x, self.y, self.theta, self.v, self.omega, target_wp, max_speed, all_obs, dt=0.05, force_forward=force_forward, ignore_id=ignore_id, obstacle_geoms=world.obstacle_geoms, static_tree=world.static_tree, static_tree_ids=world.static_tree_ids)
                 self.target_v, self.target_omega = bv, bo; self.culprit_id = culprit
 
         self.v, self.omega = self.controller.limit_physics(self.target_v, self.target_omega, self.v, self.omega, self.max_rpm * self.kinematics.rpm_to_mms, dt)
         new_x, new_y, new_theta = self.kinematics.update_pose(self.x, self.y, self.theta, self.v, self.omega, dt)
-        all_obs = world.obstacles + world.get_dynamic_obstacles(exclude_agv_id=self.id)
         margin = 505 if self.status == AGVStatus.EVADING else 525
-        safe, _ = self.controller.is_pose_safe(new_x, new_y, new_theta, all_obs, margin=margin, obstacle_geoms=world.obstacle_geoms)
+        safe, _ = self.controller.is_pose_safe(new_x, new_y, new_theta, all_obs, margin=margin, obstacle_geoms=world.obstacle_geoms, static_tree=world.static_tree, static_tree_ids=world.static_tree_ids)
         if safe: self.x, self.y, self.theta = new_x, new_y, new_theta
         else: self.v = 0; self.omega = 0; self.target_v = 0; self.target_omega = 0
 

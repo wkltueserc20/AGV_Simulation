@@ -6,6 +6,7 @@ import threading
 import queue
 import uuid
 import math
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,15 @@ from agv import AGV
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 背景執行緒與廣播任務於此啟動（取代 deprecated 的 on_event("startup")）
+    threading.Thread(target=physics_engine_thread, daemon=True).start()
+    threading.Thread(target=disk_saver_thread, daemon=True).start()
+    asyncio.create_task(telemetry_broadcaster())
+    yield
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 SIM_MULTIPLIER = 1
@@ -87,7 +96,7 @@ def process_commands():
                 elif t == "add_agv":
                     new_id = f"AGV-{str(uuid.uuid4())[:4].upper()}"
                     world.agvs[new_id] = AGV(new_id, msg.get("x", 5000), msg.get("y", 5000))
-                    world.save_agvs()
+                    world.mark_agvs_dirty()
                 elif t == "add_obstacle":
                     world.add_obstacle(msg.get("data"))
                 elif t == "update_obstacle":
@@ -116,9 +125,11 @@ def process_commands():
                     new_speed = float(msg.get("data", 3000))
                     for agv in world.agvs.values():
                         agv.max_rpm = new_speed
-                    world.save_agvs()
+                    world.mark_agvs_dirty()
                 elif t == "set_map_size":
                     world.set_map_size(msg.get("width"), msg.get("height"))
+                elif t == "import_state":
+                    world.import_state(msg.get("data", {}))
                 elif target_id and target_id in world.agvs:
                     a = world.agvs[target_id]
                     if t == "start": 
@@ -127,7 +138,7 @@ def process_commands():
                     elif t == "pause": 
                         logger.info(f"Command PAUSE received for AGV {target_id}")
                         a.is_running = False
-                    elif t == "remove_agv": del world.agvs[target_id]; world.save_agvs()
+                    elif t == "remove_agv": del world.agvs[target_id]; world.mark_agvs_dirty()
                     elif t == "reset":
                         a.x, a.y, a.theta = 5000.0, 5000.0, 0.0
                         a.v, a.omega = 0.0, 0.0; a.is_running = False; a.global_path = []
@@ -213,7 +224,7 @@ def physics_engine_thread():
                             ref_ob = next((o for o in world.obstacles if o["id"] == ref_id), None)
                             best_agv.target = {"x": ref_ob["x"], "y": ref_ob["y"]}
                             best_agv.is_running = True; best_agv.replan_needed = True
-                            world.save_agvs()
+                            world.mark_agvs_dirty()
                             idle_agvs.remove(best_agv)
             except Exception as e:
                 logger.error(f"Dispatcher Error: {e}")
@@ -227,23 +238,37 @@ def physics_engine_thread():
         if real_dt > elapsed: time.sleep(real_dt - elapsed)
 
 async def telemetry_broadcaster():
-    last_save_time = time.time()
     while True:
         start_time = asyncio.get_event_loop().time()
         data = get_snapshot()
         await manager.broadcast(data)
-        
-        if time.time() - last_save_time > 5.0:
-            with world_lock: world.save_agvs()
-            last_save_time = time.time()
-
         elapsed = asyncio.get_event_loop().time() - start_time
         await asyncio.sleep(max(0.01, 0.033 - elapsed))
 
-@app.on_event("startup")
-async def startup():
-    threading.Thread(target=physics_engine_thread, daemon=True).start()
-    asyncio.create_task(telemetry_broadcaster())
+def disk_saver_thread():
+    """鎖外持久化：僅在鎖內快速序列化，實際磁碟寫入於鎖外，避免阻塞物理迴圈。
+    AGV 位置持續變動，沿用每 5s 落盤；障礙物僅在 dirty 時寫入。"""
+    last_agv_save = time.time()
+    while True:
+        time.sleep(1.0)
+        now = time.time()
+        obs_json = None; agv_json = None
+        try:
+            with world_lock:
+                if world._obstacles_dirty:
+                    obs_json = json.dumps(world.obstacles, indent=2)
+                    world._obstacles_dirty = False
+                if world._agvs_dirty or (now - last_agv_save > 5.0):
+                    agv_json = json.dumps({aid: a.to_dict() for aid, a in world.agvs.items()}, indent=2)
+                    world._agvs_dirty = False
+                    last_agv_save = now
+            # 磁碟 I/O 於鎖外執行
+            if obs_json is not None:
+                with open(world.storage_file, 'w', encoding='utf-8') as f: f.write(obs_json)
+            if agv_json is not None:
+                with open(world.agvs_storage_file, 'w', encoding='utf-8') as f: f.write(agv_json)
+        except Exception as e:
+            logger.error(f"Disk saver error: {e}")
 
 if __name__ == "__main__":
     import uvicorn

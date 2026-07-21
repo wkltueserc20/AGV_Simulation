@@ -1,6 +1,5 @@
 import heapq
 import math
-import time
 from typing import List, Tuple, Dict, Any, Optional
 
 class AStarPlanner:
@@ -140,8 +139,6 @@ class AStarPlanner:
 
         while queue:
             iter_count += 1
-            if iter_count % 500 == 0: time.sleep(0) # 釋放 GIL
-            
             _, _, current = heapq.heappop(queue)
             visited.append(current)
             if current == goal_grid: break

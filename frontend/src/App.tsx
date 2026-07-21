@@ -121,6 +121,60 @@ function App() {
     reader.readAsDataURL(file);
   };
 
+  // 匯出全部設定（地圖尺寸 + 障礙物 + AGV + 背景地圖）成單一 JSON 檔下載
+  const handleExportConfig = () => {
+    const config = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      mapSize: { width: mapW, height: mapH },
+      obstacles: telemetry?.obstacles ?? [],
+      agvs: telemetry?.agvs ?? [],
+      bgImage: bgImageSrc,
+      bgSettings,
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `agv-config-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 匯入設定檔：還原背景地圖 (localStorage) + 重建後端狀態 (import_state 指令)
+  const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const config = JSON.parse(ev.target?.result as string);
+        // 還原背景地圖
+        if (config.bgImage) {
+          setBgImageSrc(config.bgImage);
+          try { localStorage.setItem('agv_bg_image', config.bgImage); } catch { /* 圖檔過大 */ }
+        } else {
+          setBgImageSrc(null);
+          localStorage.removeItem('agv_bg_image');
+        }
+        if (config.bgSettings) setBgSettings(config.bgSettings); // effect 會同步 localStorage 與地圖尺寸
+        // 還原後端：地圖尺寸 + 障礙物 + AGV（一次性）
+        sendCommand('import_state', {
+          data: {
+            map_size: config.mapSize,
+            obstacles: config.obstacles ?? [],
+            agvs: config.agvs ?? [],
+          },
+        });
+        alert('✅ 設定已匯入並套用。');
+      } catch {
+        alert('❌ 匯入失敗：檔案格式不正確。');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // 允許重複匯入同一檔案
+  };
+
   // 本地緩衝狀態
   const [localObFields, setLocalObFields] = useState({ id: "", x: 0, y: 0, angle: 0 });
   const [isEditing, setIsEditing] = useState(false);
@@ -640,6 +694,18 @@ function App() {
         <div className="section">
           <h3>Global Cleanup</h3>
           <button className="danger" disabled={!MODE_PERMISSIONS[activeTool].canDelete} style={{ width: '100%' }} onClick={() => sendCommand('clear_obstacles')}>WIPE ALL OBSTACLES</button>
+        </div>
+
+        <div className="section">
+          <h3>💾 設定存檔</h3>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button style={{ flex: 1 }} onClick={handleExportConfig}>⬇️ 匯出設定</button>
+            <input type="file" id="import-config-file" accept="application/json,.json" style={{ display: 'none' }} onChange={handleImportConfig} />
+            <label htmlFor="import-config-file" className="btn-like" style={{ flex: 1, textAlign: 'center', cursor: 'pointer', padding: '6px 8px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444', borderRadius: '6px', fontSize: '12px' }}>⬆️ 匯入設定</label>
+          </div>
+          <div style={{ fontSize: '10px', color: '#8b949e', marginTop: '6px', lineHeight: 1.4 }}>
+            匯出障礙物、AGV、地圖尺寸與背景地圖為單一 JSON，下次可匯入還原。
+          </div>
         </div>
 
         {/* 🗺️ 背景地圖配置面板 */}

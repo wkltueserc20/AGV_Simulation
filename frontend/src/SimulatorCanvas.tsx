@@ -47,7 +47,9 @@ const SimulatorCanvas: React.FC<Props> = ({
   const staticNeedsUpdate = useRef(true);
 
   const [boxSize, setBoxSize] = useState(750);
-  const [viewState, setViewState] = useState({ offsetX: 0, offsetY: 0 });
+  // viewState 以 ref 保存：畫布為 rAF 命令式繪製，平移不需觸發 React 重繪，
+  // 也避免 render callback 因依賴 viewState 而每幀重建、反覆重掛 rAF。
+  const viewStateRef = useRef({ offsetX: 0, offsetY: 0 });
   const hasDragged = useRef(false);
   
   const [loadedBgImage, setLoadedBgImage] = useState<HTMLImageElement | null>(null);
@@ -83,14 +85,23 @@ const SimulatorCanvas: React.FC<Props> = ({
   const telemetryRef = useRef<Telemetry | null>(null);
   const selectedAgvIdRef = useRef<string | null>(null);
   const selectedObstacleIdRef = useRef<string | null>(null);
-  
+  const lastObstacleFp = useRef<string>('');
+
   const revealedIndices = useRef<Record<string, number>>({});
   const lastSearchFingerprints = useRef<Record<string, string>>({});
   const displayStates = useRef<Record<string, {x: number, y: number, theta: number, lastUpdate: number}>>({});
   const animationFrameId = useRef<number>();
 
-  // 同步 Refs
-  useEffect(() => { telemetryRef.current = telemetry; staticNeedsUpdate.current = true; }, [telemetry]);
+  // 同步 Refs：靜態層只在障礙物內容變動時失效（AGV 移動不觸發整層重繪）。
+  // 平移/縮放/選取/背景變動的重繪觸發由其各自的 effect 或事件另行設定。
+  useEffect(() => {
+    telemetryRef.current = telemetry;
+    const fp = telemetry ? JSON.stringify(telemetry.obstacles) : '';
+    if (fp !== lastObstacleFp.current) {
+      lastObstacleFp.current = fp;
+      staticNeedsUpdate.current = true;
+    }
+  }, [telemetry]);
   useEffect(() => { selectedAgvIdRef.current = selectedAgvId; }, [selectedAgvId]);
   useEffect(() => { 
       selectedObstacleIdRef.current = selectedObstacleId; 
@@ -153,7 +164,7 @@ const SimulatorCanvas: React.FC<Props> = ({
             hasDragged.current = true;
         }
         
-        setViewState(prev => ({ ...prev, offsetX: prev.offsetX + dx, offsetY: prev.offsetY + dy }));
+        viewStateRef.current = { offsetX: viewStateRef.current.offsetX + dx, offsetY: viewStateRef.current.offsetY + dy };
         lastMousePos.current = { x: e.clientX, y: e.clientY };
         staticNeedsUpdate.current = true;
     }
@@ -166,7 +177,7 @@ const SimulatorCanvas: React.FC<Props> = ({
   const handleInteraction = (e: React.MouseEvent<HTMLCanvasElement>, callback: (x: number, y: number) => void) => {
     const canvas = canvasRef.current; if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const { x, y } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewState);
+    const { x, y } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewStateRef.current);
     callback(x, y);
   };
 
@@ -249,7 +260,7 @@ const SimulatorCanvas: React.FC<Props> = ({
     const canvas = canvasRef.current;
     const currentTelemetry = telemetryRef.current;
     const { width: w, height: h } = dimensions;
-    const vs = viewState;
+    const vs = viewStateRef.current;
 
     if (!canvas || !currentTelemetry) {
         animationFrameId.current = requestAnimationFrame(render);
@@ -466,7 +477,9 @@ const SimulatorCanvas: React.FC<Props> = ({
     });
 
     animationFrameId.current = requestAnimationFrame(render);
-  }, [worldToCanvas, dimensions, viewState, showSearch, autoTaskSourceId, mapW, mapH]);
+    // loadedBgImage / bgSettings 必須列入依賴：render 閉包捕捉 updateStaticLayer，
+    // 後者又閉包捕捉這兩者。缺了它們，換背景圖時 rAF 迴圈仍用舊閉包，新圖畫不出來。
+  }, [worldToCanvas, dimensions, showSearch, autoTaskSourceId, mapW, mapH, loadedBgImage, bgSettings]);
 
   useEffect(() => {
     animationFrameId.current = requestAnimationFrame(render);
@@ -481,7 +494,7 @@ const SimulatorCanvas: React.FC<Props> = ({
         onClick={(e) => {
             if (e.altKey) return;
             const rect = canvasRef.current!.getBoundingClientRect();
-            const { x, y } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewState);
+            const { x, y } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewStateRef.current);
             const currentTelemetry = telemetryRef.current;
             const clickedEq = currentTelemetry?.obstacles.find(ob => ob.type === 'equipment' && Math.sqrt((ob.x-x)**2+(ob.y-y)**2) < 1500);
             if (clickedEq) onCanvasClick(x, y);
@@ -500,7 +513,7 @@ const SimulatorCanvas: React.FC<Props> = ({
           }
         }} 
       />
-      <button style={{ position: 'absolute', bottom: '20px', right: '20px', opacity: 0.6 }} onClick={() => { setViewState({ offsetX: 0, offsetY: 0 }); staticNeedsUpdate.current = true; }}>
+      <button style={{ position: 'absolute', bottom: '20px', right: '20px', opacity: 0.6 }} onClick={() => { viewStateRef.current = { offsetX: 0, offsetY: 0 }; staticNeedsUpdate.current = true; }}>
         RESET VIEW
       </button>
     </div>

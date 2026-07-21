@@ -8,6 +8,7 @@ import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 from shapely.geometry import Point, box
 from shapely.affinity import rotate, translate
+from shapely.strtree import STRtree
 
 from concurrent.futures import ProcessPoolExecutor
 from agv import AGV
@@ -20,6 +21,8 @@ class World:
         self.height = height
         self.obstacles: List[Dict[str, Any]] = []
         self.obstacle_geoms: Dict[str, Any] = {} # 幾何緩存
+        self.static_tree: Optional[STRtree] = None      # 靜態障礙空間索引
+        self.static_tree_ids: List[str] = []            # 與 tree 幾何平行的 id 陣列
         self.agvs: Dict[str, AGV] = {}
         self.task_queue: List[Dict[str, Any]] = [] 
         self.task_history: List[Dict[str, Any]] = [] # 新增：已完成任務歷史
@@ -43,13 +46,19 @@ class World:
         self._is_updating = False
         self._needs_recompute = False
 
+        # 非同步存檔用 dirty 旗標（實際磁碟寫入由外部 saver 於鎖外執行）
+        self._agvs_dirty = False
+        self._obstacles_dirty = False
+
         self.load_obstacles()
         self.load_agvs()
         self.update_static_costmap()
 
     def update_obstacle_geoms(self):
-        """全面更新幾何緩存"""
+        """全面更新幾何緩存，並同步重建 STRtree 空間索引。"""
         new_geoms = {}
+        geom_list = []
+        id_list = []
         for ob in self.obstacles:
             oid = str(ob.get("id"))
             if ob['type'] == 'rectangle':
@@ -60,12 +69,24 @@ class World:
             else:
                 geom = Point(ob['x'], ob['y']).buffer(ob.get('radius', 500))
             new_geoms[oid] = geom
+            geom_list.append(geom)
+            id_list.append(oid)
         self.obstacle_geoms = new_geoms
+        # STRtree.query 回傳輸入陣列的整數 index，需保存平行的 id 陣列供反查
+        self.static_tree = STRtree(geom_list) if geom_list else None
+        self.static_tree_ids = id_list
+
+    def mark_agvs_dirty(self):
+        self._agvs_dirty = True
+
+    def mark_obstacles_dirty(self):
+        self._obstacles_dirty = True
 
     def save_obstacles(self):
         try:
             with open(self.storage_file, 'w', encoding='utf-8') as f:
                 json.dump(self.obstacles, f, indent=2)
+            self._obstacles_dirty = False
         except Exception as e:
             logger.error(f"Failed to save obstacles: {e}")
 
@@ -131,6 +152,7 @@ class World:
                 data[aid] = a.to_dict()
             with open(self.agvs_storage_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
+            self._agvs_dirty = False
         except Exception as e:
             logger.error(f"Failed to save AGVs: {e}")
 
@@ -144,6 +166,38 @@ class World:
             except Exception as e:
                 logger.error(f"Failed to load AGVs: {e}")
                 self.agvs = {}
+
+    def import_state(self, data: Dict[str, Any]):
+        """匯入完整設定：地圖尺寸 + 障礙物 + AGV，一次性替換並重算。
+        （由 process_commands 在 world_lock 內呼叫）"""
+        map_size = data.get("map_size") or {}
+        w, h = map_size.get("width"), map_size.get("height")
+        if w and h:
+            self.set_map_size(w, h)
+
+        obstacles = data.get("obstacles")
+        if obstacles is not None:
+            for ob in obstacles:
+                if ob.get("type") == "equipment" and "has_goods" not in ob:
+                    ob["has_goods"] = False
+            self.obstacles = obstacles
+            self.mark_obstacles_dirty()
+            self.update_obstacle_geoms()
+            self.update_static_costmap()
+
+        agvs = data.get("agvs")
+        if agvs is not None:
+            new_agvs = {}
+            for a in agvs:
+                aid = a.get("id")
+                if not aid:
+                    continue
+                new_agvs[aid] = AGV(aid, a.get("x", 5000.0), a.get("y", 5000.0),
+                                    a.get("theta", 0.0), state_dict=a)
+            self.agvs = new_agvs
+            self.mark_agvs_dirty()
+
+        logger.info(f"State imported: {len(self.obstacles)} obstacles, {len(self.agvs)} AGVs.")
 
     def add_task(self, source_id: str, target_id: str, agv_id: str = None):
         task_id = f"TASK-{int(time.time())}-{source_id}-{target_id}"
@@ -256,7 +310,7 @@ class World:
     def add_obstacle(self, ob: Dict[str, Any]):
         if ob.get("type") == "equipment" and "has_goods" not in ob:
             ob["has_goods"] = False
-        self.obstacles.append(ob); self.save_obstacles()
+        self.obstacles.append(ob); self.mark_obstacles_dirty()
         self.update_obstacle_geoms()
         self.update_static_costmap()
 
@@ -269,19 +323,19 @@ class World:
                 for k, v in ob_data.items():
                     if k not in ["id", "old_id", "new_id"]: ob[k] = v
                 break
-        self.save_obstacles()
+        self.mark_obstacles_dirty()
         self.update_obstacle_geoms()
         self.update_static_costmap()
 
     def remove_obstacle(self, ob_id: str):
         if not ob_id: return
         self.obstacles = [o for o in self.obstacles if str(o.get("id")) != str(ob_id)]
-        self.save_obstacles()
+        self.mark_obstacles_dirty()
         self.update_obstacle_geoms()
         self.update_static_costmap()
 
     def clear_obstacles(self):
-        self.obstacles = []; self.save_obstacles(); 
+        self.obstacles = []; self.mark_obstacles_dirty();
         self.update_obstacle_geoms(); self.update_static_costmap()
 
     def update_path_occupancy(self, agv_id: str, path_points: List[Tuple[float, float]]):

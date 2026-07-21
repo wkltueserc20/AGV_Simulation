@@ -14,7 +14,7 @@ class AGVController:
         self.max_accel = 1500.0
         self.max_dyaw_rate = 3.0
 
-    def is_pose_safe(self, x: float, y: float, theta: float, obstacles: List[Dict[str, Any]], margin=525, ignore_id: str = None, obstacle_geoms: Dict[str, Any] = None) -> Tuple[bool, Optional[str]]:
+    def is_pose_safe(self, x: float, y: float, theta: float, obstacles: List[Dict[str, Any]], margin=525, ignore_id: str = None, obstacle_geoms: Dict[str, Any] = None, static_tree=None, static_tree_ids=None) -> Tuple[bool, Optional[str]]:
         """
         檢查特定位姿是否安全。優化：優先使用預計算的幾何緩存。
         """
@@ -37,9 +37,19 @@ class AGVController:
         else:
             social_check_poly = wall_check_poly
 
+        # 空間索引候選過濾：social_check_poly 是最大的檢查框，STRtree 回傳與其
+        # 包圍盒重疊的靜態障礙（保守超集）。不在候選內的靜態障礙不可能相交，直接略過。
+        # 動態障礙（其他 AGV，id 以 "AGV" 開頭）不在索引中，一律照舊逐一檢查。
+        candidate_ids = None
+        if static_tree is not None and static_tree_ids is not None:
+            candidate_ids = {static_tree_ids[i] for i in static_tree.query(social_check_poly)}
+
         for ob in obstacles:
             oid = str(ob.get("id", "unknown"))
             if ignore_id and oid == ignore_id:
+                continue
+            # 靜態障礙且包圍盒不重疊 → 不可能碰撞，略過（動態 AGV 不受此過濾影響）
+            if candidate_ids is not None and not oid.startswith("AGV") and oid not in candidate_ids:
                 continue
 
             # 智慧對接放行邏輯 (保持不變)
@@ -69,7 +79,7 @@ class AGVController:
         return True, None
 
 
-    def compute_command(self, x, y, theta, v_curr, omega_curr, target_wp, max_speed, obstacles, margin=525, dt=0.1, ignore_id: str = None, status: str = None, force_forward: bool = False, obstacle_geoms: Dict[str, Any] = None) -> Tuple[float, float, Optional[str]]:
+    def compute_command(self, x, y, theta, v_curr, omega_curr, target_wp, max_speed, obstacles, margin=525, dt=0.1, ignore_id: str = None, status: str = None, force_forward: bool = False, obstacle_geoms: Dict[str, Any] = None, static_tree=None, static_tree_ids=None) -> Tuple[float, float, Optional[str]]:
         """
         計算控制指令，支援前進與倒車。
         """
@@ -105,7 +115,7 @@ class AGVController:
         if abs(v_curr) < 50.0:
             if abs(alpha) > 0.4:
                 w = 1.2 if alpha > 0 else -1.2
-                safe, culprit = self.is_pose_safe(x, y, theta + w * 0.1, obstacles, margin=rotate_margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms)
+                safe, culprit = self.is_pose_safe(x, y, theta + w * 0.1, obstacles, margin=rotate_margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms, static_tree=static_tree, static_tree_ids=static_tree_ids)
                 if safe:
                     v, w = self.limit_physics(0.0, w, v_curr, omega_curr, max_speed, dt, status=status)
                     return v, w, None
@@ -113,7 +123,7 @@ class AGVController:
         else:
             if abs(alpha) > 0.4:
                 w = 1.2 if alpha > 0 else -1.2
-                safe, culprit = self.is_pose_safe(x, y, theta + w * 0.1, obstacles, margin=rotate_margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms)
+                safe, culprit = self.is_pose_safe(x, y, theta + w * 0.1, obstacles, margin=rotate_margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms, static_tree=static_tree, static_tree_ids=static_tree_ids)
                 if safe:
                     v, w = self.limit_physics(0.0, w, v_curr, omega_curr, max_speed, dt, status=status)
                     return v, w, None
@@ -140,7 +150,7 @@ class AGVController:
             tx += cmd_v * math.cos(tt) * 0.2
             ty += cmd_v * math.sin(tt) * 0.2
             tt += cmd_w * 0.2
-            safe, culprit = self.is_pose_safe(tx, ty, tt, obstacles, margin=margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms)
+            safe, culprit = self.is_pose_safe(tx, ty, tt, obstacles, margin=margin, ignore_id=ignore_id, obstacle_geoms=obstacle_geoms, static_tree=static_tree, static_tree_ids=static_tree_ids)
             if not safe:
                 return 0.0, 0.0, culprit
             
