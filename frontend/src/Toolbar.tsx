@@ -42,9 +42,9 @@ function Toolbar({ activeTool, setActiveTool, selectedAgv, selectedAgvId, isConn
         {selectedAgv && (
           <div className="agv-quick-controls">
             {!selectedAgv.is_running
-              ? <button className="primary" onClick={() => sendCommand('start', { agv_id: selectedAgvId })}>▶ START 啟動</button>
-              : <button className="warning" onClick={() => sendCommand('pause', { agv_id: selectedAgvId })}>⏸ PAUSE 暫停</button>}
-            <button className="danger" onClick={() => sendCommand('reset', { agv_id: selectedAgvId })}>🔄 RESET 重設</button>
+              ? <button className="primary" title="啟動 START" onClick={() => sendCommand('start', { agv_id: selectedAgvId })}>▶ 啟動</button>
+              : <button className="warning" title="暫停 PAUSE" onClick={() => sendCommand('pause', { agv_id: selectedAgvId })}>⏸ 暫停</button>}
+            <button className="danger" title="重設 RESET" onClick={() => sendCommand('reset', { agv_id: selectedAgvId })}>🔄 重設</button>
           </div>
         )}
       </div>

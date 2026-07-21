@@ -81,9 +81,13 @@ body {
   gap: 12px;
 }
 
+.toolbar-left { gap: 6px; }
+.toolbar-right { gap: 8px; flex-shrink: 0; }
+
 .toolbar-center {
   flex: 1;
   justify-content: center;
+  min-width: 0;
 }
 
 .agv-quick-controls {
@@ -533,10 +537,11 @@ input[type="number"] {
   justify-content: center;
   gap: 1px;
   height: 40px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   line-height: 1.1;
+  flex-shrink: 0;
 }
-.mode-btn-main { font-size: 12px; font-weight: 600; }
+.mode-btn-main { font-size: 11px; font-weight: 600; white-space: nowrap; }
 .mode-btn-zh { font-size: 9px; color: var(--text-muted); letter-spacing: 1px; }
 .toolbar-container button.mode-btn.active {
   box-shadow: 0 0 0 1px var(--accent-blue), 0 0 10px rgba(88, 166, 255, 0.25);
