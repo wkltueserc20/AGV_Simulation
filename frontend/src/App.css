@@ -490,3 +490,39 @@ input[type="number"] {
   border-color: #8b949e;
 }
 
+/* Toast 通知（取代阻塞式 alert） */
+.toaster {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 220px;
+  max-width: 420px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #30363d;
+  border: 1px solid var(--border-main);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast-error { background: #4d1f1f; border-color: var(--accent-red); }
+.toast-success { background: #17331b; border-color: var(--accent-green); }
+.toast-info { background: #17293f; border-color: var(--accent-blue); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+

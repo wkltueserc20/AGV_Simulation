@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { Telemetry, AGVData } from './useSimulation';
+import type { Telemetry } from './useSimulation';
 
 interface Props {
   telemetry: Telemetry | null;
@@ -90,7 +90,7 @@ const SimulatorCanvas: React.FC<Props> = ({
   const revealedIndices = useRef<Record<string, number>>({});
   const lastSearchFingerprints = useRef<Record<string, string>>({});
   const displayStates = useRef<Record<string, {x: number, y: number, theta: number, lastUpdate: number}>>({});
-  const animationFrameId = useRef<number>();
+  const animationFrameId = useRef<number | undefined>(undefined);
 
   // 同步 Refs：靜態層只在障礙物內容變動時失效（AGV 移動不觸發整層重繪）。
   // 平移/縮放/選取/背景變動的重繪觸發由其各自的 effect 或事件另行設定。
@@ -244,8 +244,8 @@ const SimulatorCanvas: React.FC<Props> = ({
                 ctx.fillStyle = isSelected ? '#ff6600' : '#d4af37'; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
                 ctx.strokeStyle = isSelected ? '#fff' : '#ffd700'; ctx.lineWidth = 1.5; ctx.stroke();
             } else {
-                ctx.rotate(-ob.angle);
-                const ow = ob.width * scale, oh = ob.height * scale;
+                ctx.rotate(-(ob.angle || 0));
+                const ow = (ob.width || 0) * scale, oh = (ob.height || 0) * scale;
                 ctx.fillStyle = isSelected ? '#ff6600' : '#d4af37'; ctx.fillRect(-ow/2, -oh/2, ow, oh);
                 ctx.strokeStyle = isSelected ? '#fff' : '#ffd700'; ctx.lineWidth = 1.5; ctx.strokeRect(-ow/2, -oh/2, ow, oh);
             }

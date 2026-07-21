@@ -7,6 +7,7 @@ export interface AGVData {
   max_rpm: number; is_running: boolean;
   is_planning: boolean;
   status: string;
+  has_goods?: boolean;
   target: { x: number; y: number };
   path: [number, number][];
   visited?: [number, number][];
@@ -14,6 +15,30 @@ export interface AGVData {
   evasion_target?: { x: number; y: number };
   current_travel_time?: number;
   last_travel_time?: number;
+}
+
+// 障礙物/設備：三種 type 共用一個介面，幾何欄位依 type 選填
+export interface Obstacle {
+  id: string;
+  type: 'rectangle' | 'circle' | 'equipment';
+  x: number;
+  y: number;
+  width?: number;   // rectangle
+  height?: number;  // rectangle
+  angle?: number;   // rectangle
+  radius?: number;  // circle / equipment
+  status?: 'normal' | 'running' | 'error'; // equipment
+  docking_angle?: number;                  // equipment
+  has_goods?: boolean;                      // equipment
+}
+
+export interface Task {
+  id: string;
+  source_id?: string | null;
+  target_id?: string | null;
+  agv_id?: string | null;
+  status?: string;
+  execution_time?: number;
 }
 
 export interface SocialLink {
@@ -24,12 +49,13 @@ export interface SocialLink {
 
 export interface Telemetry {
   agvs: AGVData[];
-  obstacles: any[];
+  obstacles: Obstacle[];
   multiplier: number;
   social_links?: SocialLink[];
   path_occupancy?: Record<string, [number, number][]>;
   reserved_havens?: Record<string, [number, number]>;
-  task_queue?: any[]; // 新增：支援物流任務隊列
+  task_queue?: Task[];
+  task_history?: Task[];
 }
 
 export const useSimulation = (url: string) => {
