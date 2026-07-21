@@ -15,8 +15,18 @@ import { toast, Toaster } from './toast';
 import { snapToCenter, snapToIntersection } from './utils';
 import './App.css';
 
+// WebSocket 位址：
+// - VITE_WS_URL 若有設定則優先（供遠端後端部署用）
+// - 開發模式（vite dev, 前端 5173）連本機後端 8000
+// - 正式打包（由 FastAPI 同源服務）用當前網址，自動對應 ws/wss 與埠
+const WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  (import.meta.env.DEV
+    ? 'ws://localhost:8000/ws'
+    : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+
 function App() {
-  const { telemetry, isConnected, sendCommand } = useSimulation('ws://localhost:8000/ws');
+  const { telemetry, isConnected, sendCommand } = useSimulation(WS_URL);
   
   // 權限矩陣定義
   const MODE_PERMISSIONS: Record<ToolMode, { canAdd: 'NONE' | 'OBSTACLE' | 'EQUIPMENT', canDelete: boolean, canEdit: boolean, rightClick: 'NONE' | 'SET_TARGET' | 'CANCEL_TASK' | 'CANCEL_SELECT' }> = {

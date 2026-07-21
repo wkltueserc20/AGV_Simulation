@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 import threading
 import queue
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from world import World
 from agv import AGV
@@ -269,6 +271,15 @@ def disk_saver_thread():
                 with open(world.agvs_storage_file, 'w', encoding='utf-8') as f: f.write(agv_json)
         except Exception as e:
             logger.error(f"Disk saver error: {e}")
+
+# 服務打包好的前端（frontend/dist）：本機一鍵啟動時前後端同源同埠。
+# 必須放在所有 API/WebSocket 路由「之後」掛載，"/" 的 StaticFiles 才不會蓋掉 /ws。
+# html=True 讓 "/" 回傳 index.html。dist 不存在（尚未 build）時略過，僅跑 API。
+_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_DIST):
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")
+else:
+    logger.warning("frontend/dist 不存在，僅提供 API；請先在 frontend 執行 npm run build。")
 
 if __name__ == "__main__":
     import uvicorn
