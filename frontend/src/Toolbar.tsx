@@ -13,7 +13,7 @@ interface Props {
 }
 
 const MODES: { key: ToolMode; icon: string; en: string; zh: string; hint: string }[] = [
-  { key: 'SELECT',        icon: '🔍', en: 'SELECT',    zh: '選擇', hint: '純瀏覽：點物件看參數，不會誤改' },
+  { key: 'SELECT',        icon: '🔍', en: 'SELECT',    zh: '選擇', hint: '點物件看參數；拖曳 AGV 可重新定位起點' },
   { key: 'SINGLE_ACTION', icon: '🖱️', en: 'SINGLE',    zh: '單動', hint: '點 AGV 後右鍵畫布設定導航目標點' },
   { key: 'AUTO',          icon: '🤖', en: 'AUTO',      zh: '自動', hint: '兩步指派任務：先點起點再點終點' },
   { key: 'BUILD_STAR',    icon: '⭐', en: 'EQUIPMENT', zh: '設備', hint: '新增設備；側邊欄可部署/移除 AGV' },

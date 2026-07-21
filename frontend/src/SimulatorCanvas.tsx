@@ -24,6 +24,8 @@ interface Props {
   onCanvasDoubleClick: (x: number, y: number) => void;
   onCanvasRightClick: (x: number, y: number) => void;
   onAgvSelect: (id: string) => void;
+  allowAgvDrag?: boolean;                              // 選取模式下允許拖曳 AGV 重新定位
+  onAgvMove?: (id: string, x: number, y: number) => void;
 }
 
 const GRID_SIZE = 200;
@@ -36,7 +38,8 @@ const SimulatorCanvas: React.FC<Props> = ({
   telemetry, selectedAgvId, selectedObstacleId, autoTaskSourceId, showSearch,
   mapW: propMapW, mapH: propMapH,
   bgImageSrc, bgSettings,
-  onCanvasClick, onCanvasDoubleClick, onCanvasRightClick, onAgvSelect
+  onCanvasClick, onCanvasDoubleClick, onCanvasRightClick, onAgvSelect,
+  allowAgvDrag, onAgvMove
 }) => {
   // 世界邊界尺寸 (mm)；未提供時退回 50000 預設
   const mapW = (typeof propMapW === 'number' && !isNaN(propMapW) && propMapW > 0) ? propMapW : 50000;
@@ -81,6 +84,12 @@ const SimulatorCanvas: React.FC<Props> = ({
 
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
+
+  // AGV 拖曳重新定位狀態
+  const draggingAgvId = useRef<string | null>(null); // 拖曳中或等待後端確認的 AGV
+  const agvDragHolding = useRef(false);              // 滑鼠是否仍按住
+  const dragWorld = useRef({ x: 0, y: 0 });          // 目前拖曳到的世界座標
+  const justDraggedAgv = useRef(false);              // 抑制放開後緊接的 onClick
 
   const telemetryRef = useRef<Telemetry | null>(null);
   const selectedAgvIdRef = useRef<string | null>(null);
@@ -144,7 +153,28 @@ const SimulatorCanvas: React.FC<Props> = ({
   }, [mapW]);
 
   // --- 事件處理函式 ---
+  // 將滑鼠事件轉為世界座標
+  const eventToWorld = (e: React.MouseEvent) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewStateRef.current);
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
+    // 左鍵（非 Alt）且允許拖曳時：若點在某台 AGV 上，開始「拖曳重新定位」
+    if (e.button === 0 && !e.altKey && allowAgvDrag) {
+      const { x, y } = eventToWorld(e);
+      const hit = telemetryRef.current?.agvs.find(a => Math.sqrt((a.x - x) ** 2 + (a.y - y) ** 2) <= 1500);
+      if (hit) {
+        draggingAgvId.current = hit.id;
+        agvDragHolding.current = true;
+        dragWorld.current = { x: hit.x, y: hit.y };
+        hasDragged.current = false;
+        lastMousePos.current = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+        return;
+      }
+    }
     // 支援中鍵 (1)、Alt+左鍵 (0 + alt)、右鍵 (2) 進行平移
     if (e.button === 1 || (e.button === 0 && e.altKey) || e.button === 2) {
         isDragging.current = true;
@@ -155,15 +185,23 @@ const SimulatorCanvas: React.FC<Props> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    // AGV 拖曳中：更新拖曳世界座標（render 迴圈會把該 AGV 畫在此處）
+    if (agvDragHolding.current) {
+        const dx = e.clientX - lastMousePos.current.x;
+        const dy = e.clientY - lastMousePos.current.y;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasDragged.current = true;
+        dragWorld.current = eventToWorld(e);
+        return;
+    }
     if (isDragging.current) {
         const dx = e.clientX - lastMousePos.current.x;
         const dy = e.clientY - lastMousePos.current.y;
-        
+
         // 如果移動超過 3 像素，則判定為「拖曳平移」，以防止右鍵拖曳觸發點擊行為
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
             hasDragged.current = true;
         }
-        
+
         viewStateRef.current = { offsetX: viewStateRef.current.offsetX + dx, offsetY: viewStateRef.current.offsetY + dy };
         lastMousePos.current = { x: e.clientX, y: e.clientY };
         staticNeedsUpdate.current = true;
@@ -171,6 +209,18 @@ const SimulatorCanvas: React.FC<Props> = ({
   };
 
   const handleMouseUp = () => {
+    // AGV 拖曳放開：有實際移動才送出 move_agv；否則視為單純點擊（交給 onClick 選取）
+    if (agvDragHolding.current) {
+        agvDragHolding.current = false;
+        const id = draggingAgvId.current;
+        if (id && hasDragged.current) {
+            onAgvMove?.(id, dragWorld.current.x, dragWorld.current.y);
+            justDraggedAgv.current = true;         // 抑制緊接的 onClick
+            // draggingAgvId 保留，render 續畫在 dragWorld，直到後端回報到位（見 render 迴圈）
+        } else {
+            draggingAgvId.current = null;          // 只是點擊，未移動
+        }
+    }
     isDragging.current = false;
   };
 
@@ -291,6 +341,14 @@ const SimulatorCanvas: React.FC<Props> = ({
           ds.theta += dTheta * 0.3;
         } else { ds.x = a.x; ds.y = a.y; ds.theta = a.theta; }
         ds.lastUpdate = now;
+      }
+      // 拖曳重新定位：把該 AGV 畫在拖曳點；放開後續畫在該點直到後端回報到位
+      if (draggingAgvId.current === a.id) {
+        const dsx = displayStates.current[a.id];
+        dsx.x = dragWorld.current.x; dsx.y = dragWorld.current.y;
+        if (!agvDragHolding.current && Math.hypot(a.x - dragWorld.current.x, a.y - dragWorld.current.y) < 300) {
+          draggingAgvId.current = null; // 後端已到位，解除覆寫
+        }
       }
     });
 
@@ -489,10 +547,11 @@ const SimulatorCanvas: React.FC<Props> = ({
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
       <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} 
-        style={{ border: '2px solid #333', background: '#0d0e12', cursor: isDragging.current ? 'grabbing' : 'crosshair' }} 
+        style={{ border: '2px solid #333', background: '#0d0e12', cursor: agvDragHolding.current ? 'grabbing' : (allowAgvDrag ? 'grab' : (isDragging.current ? 'grabbing' : 'crosshair')) }}
         onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
         onClick={(e) => {
             if (e.altKey) return;
+            if (justDraggedAgv.current) { justDraggedAgv.current = false; return; } // 剛拖曳完 AGV，不觸發選取
             const rect = canvasRef.current!.getBoundingClientRect();
             const { x, y } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top, dimensions.width, dimensions.height, viewStateRef.current);
             const currentTelemetry = telemetryRef.current;

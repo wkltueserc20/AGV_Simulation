@@ -159,6 +159,19 @@ def process_commands():
                         a.current_task = None; a.global_path = []; a.yielding_to_id = None
                         a.original_target = None; a.replan_needed = False
                         if a.current_travel_time > 0: a.last_travel_time = a.current_travel_time; a.current_travel_time = 0
+                    elif t == "move_agv":
+                        # 重新定位：瞬移到指定座標並停下，清空路徑/任務，轉為 IDLE 起點
+                        data = msg.get("data", {})
+                        a.x = float(data.get("x", a.x))
+                        a.y = float(data.get("y", a.y))
+                        if data.get("theta") is not None: a.theta = float(data["theta"])
+                        a.v, a.omega = 0.0, 0.0; a.l_rpm, a.r_rpm = 0.0, 0.0
+                        a.status = "IDLE"; a.is_running = False
+                        a.current_task = None; a.global_path = []; a.yielding_to_id = None
+                        a.original_target = None; a.replan_needed = False; a.retry_count = 0
+                        a.target = {"x": a.x, "y": a.y}
+                        if a.current_travel_time > 0: a.last_travel_time = a.current_travel_time; a.current_travel_time = 0
+                        world.mark_agvs_dirty()
                     elif t == "set_target":
                         a.target = msg.get("data")
                         a.is_running = True

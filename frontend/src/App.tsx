@@ -594,7 +594,7 @@ function App() {
         <div className="mode-status-bar">
             {lastMissionStatus ? <span style={{ color: '#39ff14', fontWeight: 'bold' }}>{lastMissionStatus}</span> : 
              activeTool === 'AUTO' ? <span className="animate-pulse">{getAutoHint()}</span> : 
-             activeTool === 'SELECT' ? <span>模式：純選擇 | 點選物件查看參數，此模式下禁止修改。</span> : 
+             activeTool === 'SELECT' ? <span>模式：選擇 | 點選物件查看參數；拖曳 AGV 可重新定位起始位置。</span> :
              activeTool === 'SINGLE_ACTION' ? <span>模式：單動控制 | 點選 AGV 後，「右鍵」畫布可直接設定導航目標位。</span> : 
              activeTool === 'BUILD_STAR' ? <span>模式：設備建築 | 點擊空白處新增設備，側邊欄可部署/移除 AGV。</span> :
              <span>模式：建築模式 | 點擊空白處新增障礙物，雙擊物件可即時刪除。</span>}
@@ -611,9 +611,11 @@ function App() {
             mapH={mapH}
             bgImageSrc={bgImageSrc}
             bgSettings={bgSettings}
-            onCanvasClick={handleCanvasClick} 
-            onCanvasDoubleClick={handleCanvasDoubleClick} 
-            onAgvSelect={(id) => { setSelectedAgvId(id); setSelectedObId(null); }} 
+            onCanvasClick={handleCanvasClick}
+            onCanvasDoubleClick={handleCanvasDoubleClick}
+            onAgvSelect={(id) => { setSelectedAgvId(id); setSelectedObId(null); }}
+            allowAgvDrag={activeTool === 'SELECT'}
+            onAgvMove={(id, x, y) => sendCommand('move_agv', { agv_id: id, data: { x: Math.round(x), y: Math.round(y) } })}
             onCanvasRightClick={(x, y) => {
               const perm = MODE_PERMISSIONS[activeTool].rightClick;
               if (perm === 'SET_TARGET') {

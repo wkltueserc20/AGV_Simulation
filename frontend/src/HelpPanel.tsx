@@ -4,7 +4,7 @@ interface Props {
 }
 
 const MODE_HELP: { icon: string; name: string; desc: string }[] = [
-  { icon: '🔍', name: 'SELECT 選擇', desc: '純瀏覽。點物件看參數，不會誤改。' },
+  { icon: '🔍', name: 'SELECT 選擇', desc: '點物件看參數；拖曳 AGV 可把它移到新的起始位置。' },
   { icon: '🖱️', name: 'SINGLE 單動', desc: '點選 AGV 後，右鍵畫布設定導航目標點。' },
   { icon: '🤖', name: 'AUTO 自動', desc: '兩步指派任務：先點起點（有貨設備/車）再點終點。' },
   { icon: '⭐', name: 'EQUIPMENT 設備', desc: '點空白處新增設備；側邊欄可部署/移除 AGV。' },
