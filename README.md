@@ -45,6 +45,7 @@
 ### 2. 介面佈局
 - **左側側邊欄**：系統全域控制（倍率、調測層）、車隊清單、選中物件設定（ID/座標/角度）、AGV 限制。
 - **右側狀態列**：選中 AGV 的高頻遙測數據（RPM、速度、座標）、**任務隊列**（等待中任務）、**任務歷史**（已完成任務）。
+- **提示訊息**：卡控與操作提示以右上角自動消失的 Toast 呈現（不阻塞畫面）；僅刪除背景圖等破壞性動作會保留確認彈窗。
 
 ### 3. 基本操作
 - **啟動**：執行 `.\start.ps1` 一鍵啟動前後端。
@@ -58,3 +59,33 @@
 1.  **物理平衡中心場**：利用 $1/dist^4$ 代價函數尋找幾何中線。
 2.  **搜尋優化 (Tie-Breaking)**：消除座標大小偏見，使搜尋朝向目標「波束化」。
 3.  **演算法視覺化**：具備「思考雲」重播功能，即時展示 A* 搜尋節點。
+
+---
+
+## 🧩 前端架構 (Frontend Architecture)
+
+前端為 React 19 + TypeScript + Vite，透過單一 WebSocket (`ws://localhost:8000/ws`) 與後端通訊。畫面渲染使用 HTML5 Canvas 2D（雙層快取：靜態背景/障礙物層 + 每幀動態層），平移縮放以 ref 保存避免多餘重繪。
+
+`frontend/src/` 元件拆分：
+
+| 檔案 | 職責 |
+|------|------|
+| `App.tsx` | 根元件：全域狀態、指令派發、樂觀更新對帳、畫布事件處理 |
+| `SimulatorCanvas.tsx` | Canvas 2D 渲染（AGV／路徑／障礙物／設備／社交連結） |
+| `Toolbar.tsx` | 上方工具列：6 種互動模式、AGV 快速控制、連線狀態 |
+| `FleetPanel.tsx` | 左側車隊清單（狀態色、行走計時、FORCE IDLE / START-PAUSE） |
+| `SettingsPanel.tsx` | 選中障礙物／設備的參數編輯（ID／座標／角度／狀態／貨況） |
+| `TelemetryPanel.tsx` | 右側遙測、任務隊列、任務歷史 |
+| `BackgroundMapPanel.tsx` | 背景地圖匯入與對齊（尺寸／偏移／旋轉／透明度） |
+| `toast.tsx` | 極簡非阻塞 Toast 通知 |
+| `useSimulation.ts` | WebSocket hook 與資料型別（`AGVData` / `Obstacle` / `Task` / `Telemetry`） |
+| `utils.ts` | 純函式（座標吸附、角度／時間格式化） |
+
+### 開發指令
+
+```bash
+cd frontend
+npm install
+npm run dev      # 開發伺服器
+npm run build    # tsc -b 型別檢查 + vite 打包
+```
