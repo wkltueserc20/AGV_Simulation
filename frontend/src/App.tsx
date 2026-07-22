@@ -499,10 +499,10 @@ function App() {
           </div>
           <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <input type="checkbox" id="show-search" checked={showSearch} onChange={(e) => setShowSearch(e.target.checked)} />
-            <label htmlFor="show-search" style={{ fontSize: '11px', color: '#8b949e', cursor: 'pointer' }}>搜尋除錯層 Search Debug</label>
+            <label htmlFor="show-search" style={{ fontSize: '11px', color: '#4a4a4a', cursor: 'pointer' }}>搜尋除錯層 Search Debug</label>
           </div>
-          <div style={{ marginTop: '15px', borderTop: '1px solid #30363d', paddingTop: '12px' }}>
-            <label style={{ fontSize: '10px', color: '#8b949e', display: 'block', marginBottom: '5px' }}>全域速度上限 · {globalRpm} RPM</label>
+          <div style={{ marginTop: '15px', borderTop: '2px solid #000', paddingTop: '12px' }}>
+            <label style={{ fontSize: '10px', color: '#4a4a4a', display: 'block', marginBottom: '5px' }}>全域速度上限 · {globalRpm} RPM</label>
             <input 
               type="range" 
               min="0" max="3000" step="100" 
@@ -512,7 +512,7 @@ function App() {
                 setGlobalRpm(val);
                 sendCommand('set_all_speeds', { data: val });
               }} 
-              style={{ width: '100%', accentColor: '#ff9800' }} 
+              style={{ width: '100%', accentColor: '#000' }}
             />
           </div>
         </div>
@@ -545,7 +545,7 @@ function App() {
         )}
 
         {selectedAgv && (
-          <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
+          <div className="section" style={{ borderTop: '2px solid #000', paddingTop: '15px' }}>
             <h3>AGV 操作 · {selectedAgv.id}</h3>
             {MODE_PERMISSIONS[activeTool].canAdd === 'EQUIPMENT' && <button className="danger" style={{ width: '100%', marginTop: '5px', opacity: 0.6 }} onClick={() => sendCommand('remove_agv', { agv_id: selectedAgvId })}>移除 AGV</button>}
           </div>
@@ -561,9 +561,9 @@ function App() {
           <div style={{ display: 'flex', gap: '6px' }}>
             <button style={{ flex: 1 }} onClick={handleExportConfig}>⬇️ 匯出設定</button>
             <input type="file" id="import-config-file" accept="application/json,.json" style={{ display: 'none' }} onChange={handleImportConfig} />
-            <label htmlFor="import-config-file" className="btn-like" style={{ flex: 1, textAlign: 'center', cursor: 'pointer', padding: '6px 8px', background: '#30363d', color: '#c9d1d9', border: '1px solid #444', borderRadius: '6px', fontSize: '12px' }}>⬆️ 匯入設定</label>
+            <label htmlFor="import-config-file" className="btn-like" style={{ flex: 1, textAlign: 'center', cursor: 'pointer', padding: '7px 8px', background: '#FFFFFF', color: '#000', border: '2px solid #000', borderRadius: 0, boxShadow: '3px 3px 0 #000', fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' }}>⬆️ 匯入設定</label>
           </div>
-          <div style={{ fontSize: '10px', color: '#8b949e', marginTop: '6px', lineHeight: 1.4 }}>
+          <div style={{ fontSize: '10px', color: '#4a4a4a', marginTop: '6px', lineHeight: 1.4 }}>
             匯出障礙物、AGV、地圖尺寸與背景地圖為單一 JSON，下次可匯入還原。
           </div>
         </div>
@@ -592,7 +592,7 @@ function App() {
         />
 
         <div className="mode-status-bar">
-            {lastMissionStatus ? <span style={{ color: '#39ff14', fontWeight: 'bold' }}>{lastMissionStatus}</span> : 
+            {lastMissionStatus ? <span style={{ color: '#000', fontWeight: 700 }}>{lastMissionStatus}</span> :
              activeTool === 'AUTO' ? <span className="animate-pulse">{getAutoHint()}</span> : 
              activeTool === 'SELECT' ? <span>模式：選擇 | 點選物件查看參數；拖曳 AGV 可重新定位起始位置。</span> :
              activeTool === 'SINGLE_ACTION' ? <span>模式：單動控制 | 點選 AGV 後，「右鍵」畫布可直接設定導航目標位。</span> : 

@@ -71,7 +71,7 @@ function BackgroundMapPanel({
   };
 
   return (
-    <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
+    <div className="section" style={{ borderTop: '2px solid #000', paddingTop: '15px' }}>
       <div
         style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
         onClick={() => setBgPanelOpen(!bgPanelOpen)}
@@ -97,7 +97,7 @@ function BackgroundMapPanel({
           </div>
 
           {/* 操作小提示 */}
-          <div style={{ fontSize: '10px', color: '#8b949e', background: 'rgba(0,0,0,0.25)', padding: '6px 8px', borderRadius: '6px', marginBottom: '10px', lineHeight: '1.4', border: '1px solid rgba(88, 166, 255, 0.1)' }}>
+          <div style={{ fontSize: '10px', color: '#000', background: 'var(--accent-yellow)', padding: '8px 10px', borderRadius: 0, marginBottom: '10px', lineHeight: '1.5', fontWeight: 600, border: '2px solid #000' }}>
             💡 <b>操作小提示</b>：<br/>
             • <b>畫布縮放</b>：滾動 [滑鼠滾輪] (以游標為中心)<br/>
             • <b>地圖平移</b>：按住 [滑鼠右鍵] 或 [滾輪中鍵] 拖曳<br/>

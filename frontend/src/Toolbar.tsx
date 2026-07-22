@@ -50,7 +50,7 @@ function Toolbar({ activeTool, setActiveTool, selectedAgv, selectedAgvId, isConn
       </div>
       <div className="toolbar-right">
         <button className="help-btn" title="使用說明" onClick={onShowHelp}>❓ 說明</button>
-        <div className={`status-badge ${isConnected ? 'online' : 'offline'}`} style={{ border: 'none', background: 'transparent' }}>{isConnected ? 'SIGNAL OK' : 'NO SIGNAL'}</div>
+        <div className={`status-badge ${isConnected ? 'online' : 'offline'}`}>{isConnected ? 'SIGNAL OK' : 'NO SIGNAL'}</div>
       </div>
     </div>
   );

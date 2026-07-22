@@ -22,7 +22,7 @@ function SettingsPanel({
   canEdit, canDelete, sendCommand, setPendingDeletions, setSelectedObId,
 }: Props) {
   return (
-    <div className="section" style={{ borderTop: '1px solid #30363d', paddingTop: '15px' }}>
+    <div className="section" style={{ borderTop: '2px solid #000', paddingTop: '15px' }}>
       <h3>設定 · {selectedObstacle.type === 'equipment' ? '設備 Equipment' : '物件 Object'}</h3>
       <div className="item-card active">
         <div className="telemetry-grid">

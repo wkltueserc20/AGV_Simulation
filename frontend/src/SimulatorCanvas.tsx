@@ -34,6 +34,64 @@ const GRID_SIZE = 200;
 const STATION_PATH = "M -50,-50 L 50,-50 L 50,-20 L 40,-20 L 40,20 L 50,20 L 50,50 L -50,50 L -50,20 L -40,20 L -40,-20 L -50,-20 Z";
 const stationPath2D = new Path2D(STATION_PATH);
 
+// Neubrutalism 配色：米白底、純黑邊、平塗鮮豔（畫布繪製用字面 hex）
+const C = {
+  bg: '#FFF8E7',
+  gridMinor: '#EFE6CA',
+  gridMajor: '#D6C9A3',
+  ruler: '#000000',
+  border: '#000000',
+  obstacle: '#AEB7C4', obstacleStroke: '#000000', obstacleSel: '#FFE66D',
+  agvBody: '#FF8C42', agvStroke: '#000000', agvSel: '#2E7DD1',
+  agvHub: '#000000', agvArrow: '#000000',
+  target: '#159947', targetIdle: '#8FBBA1',
+  pathSel: '#2E7DD1', occupancy: 'rgba(46,125,209,0.12)',
+  label: '#000000', labelBg: '#FFFFFF',
+  cargo: '#FFFFFF', cargoStroke: '#000000', docking: '#2E7DD1',
+};
+
+// 設備狀態色（平塗鮮豔）
+const EQUIP_COLORS: Record<string, string> = { normal: '#FFE66D', running: '#4ECDC4', error: '#FF6B6B' };
+
+// AGV 狀態語意色（亮底可讀）
+const STATUS_COLORS: Record<string, string> = {
+  IDLE: '#4a4a4a', PLANNING: '#C77800', EXECUTING: '#159947',
+  EVADING: '#7A3FC9', YIELDING: '#7A3FC9', THINKING: '#2E7DD1',
+  WAITING: '#C77800', LOADING: '#2E7DD1', UNLOADING: '#2E7DD1',
+  STUCK: '#D62828', BLOCKED: '#C77800', ERROR: '#D62828',
+};
+
+// 圓角矩形（ctx.roundRect 在舊環境不一定有，自帶一份保底）
+function rr(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// 狀態膠囊：色點 + 縮寫，取代 emoji（跨平台一致、辨識度高）
+function drawStatusPill(ctx: CanvasRenderingContext2D, cx: number, cy: number, status: string) {
+  const color = STATUS_COLORS[status] || '#8b949e';
+  ctx.save();
+  ctx.font = 'bold 9px monospace';
+  const tw = ctx.measureText(status).width;
+  const padX = 6, dot = 4, gap = 4, ph = 15;
+  const pw = padX * 2 + dot + gap + tw;
+  const x = cx - pw / 2;
+  rr(ctx, x, cy - ph / 2, pw, ph, 0);
+  ctx.fillStyle = '#FFFFFF'; ctx.fill();
+  ctx.strokeStyle = '#000000'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x + padX + dot / 2, cy, dot / 2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#000000'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(status, x + padX + dot + gap, cy + 0.5);
+  ctx.restore();
+}
+
 const SimulatorCanvas: React.FC<Props> = ({
   telemetry, selectedAgvId, selectedObstacleId, autoTaskSourceId, showSearch,
   mapW: propMapW, mapH: propMapH,
@@ -52,7 +110,7 @@ const SimulatorCanvas: React.FC<Props> = ({
   const [boxSize, setBoxSize] = useState(750);
   // viewState 以 ref 保存：畫布為 rAF 命令式繪製，平移不需觸發 React 重繪，
   // 也避免 render callback 因依賴 viewState 而每幀重建、反覆重掛 rAF。
-  const viewStateRef = useRef({ offsetX: 0, offsetY: 0 });
+  const viewStateRef = useRef({ offsetX: 0, offsetY: 0, zoom: 1 });
   const hasDragged = useRef(false);
   
   const [loadedBgImage, setLoadedBgImage] = useState<HTMLImageElement | null>(null);
@@ -86,6 +144,7 @@ const SimulatorCanvas: React.FC<Props> = ({
   const lastMousePos = useRef({ x: 0, y: 0 });
 
   // AGV 拖曳重新定位狀態
+  const hoveredAgvId = useRef<string | null>(null);   // 滑鼠懸停的 AGV（顯示標籤用）
   const draggingAgvId = useRef<string | null>(null); // 拖曳中或等待後端確認的 AGV
   const agvDragHolding = useRef(false);              // 滑鼠是否仍按住
   const dragWorld = useRef({ x: 0, y: 0 });          // 目前拖曳到的世界座標
@@ -143,14 +202,35 @@ const SimulatorCanvas: React.FC<Props> = ({
   useEffect(() => { staticNeedsUpdate.current = true; }, [dimensions.width, dimensions.height]);
 
   const worldToCanvas = useCallback((x: number, y: number, w: number, h: number, vs: any) => {
-    const scale = (w / mapW);
+    const scale = (w / mapW) * (vs?.zoom || 1);
     return { cx: (x * scale) + vs.offsetX, cy: h - (y * scale) + vs.offsetY };
   }, [mapW]);
 
   const canvasToWorld = useCallback((cx: number, cy: number, w: number, h: number, vs: any) => {
-    const scale = (w / mapW);
+    const scale = (w / mapW) * (vs?.zoom || 1);
     return { x: (cx - vs.offsetX) / scale, y: (h + vs.offsetY - cy) / scale };
   }, [mapW]);
+
+  // 滾輪縮放：以游標為錨點，維持該世界點在畫面上不動
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const { width: w, height: h } = dimensions;
+      const vs = viewStateRef.current;
+      const world = canvasToWorld(mx, my, w, h, vs);
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      const zoom = Math.min(8, Math.max(0.4, (vs.zoom || 1) * factor));
+      const scale = (w / mapW) * zoom;
+      viewStateRef.current = { zoom, offsetX: mx - world.x * scale, offsetY: my - (h - world.y * scale) };
+      staticNeedsUpdate.current = true;
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [canvasToWorld, mapW, dimensions]);
 
   // --- 事件處理函式 ---
   // 將滑鼠事件轉為世界座標
@@ -202,13 +282,19 @@ const SimulatorCanvas: React.FC<Props> = ({
             hasDragged.current = true;
         }
 
-        viewStateRef.current = { offsetX: viewStateRef.current.offsetX + dx, offsetY: viewStateRef.current.offsetY + dy };
+        viewStateRef.current = { ...viewStateRef.current, offsetX: viewStateRef.current.offsetX + dx, offsetY: viewStateRef.current.offsetY + dy };
         lastMousePos.current = { x: e.clientX, y: e.clientY };
         staticNeedsUpdate.current = true;
+        return;
     }
+    // 閒置：偵測懸停的 AGV（僅 ref，不觸發 React 重繪；render 迴圈每幀讀取）
+    const { x, y } = eventToWorld(e);
+    const hit = telemetryRef.current?.agvs.find(a => Math.hypot(a.x - x, a.y - y) <= 1200);
+    hoveredAgvId.current = hit ? hit.id : null;
   };
 
   const handleMouseUp = () => {
+    hoveredAgvId.current = null;
     // AGV 拖曳放開：有實際移動才送出 move_agv；否則視為單純點擊（交給 onClick 選取）
     if (agvDragHolding.current) {
         agvDragHolding.current = false;
@@ -239,8 +325,8 @@ const SimulatorCanvas: React.FC<Props> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const scale = (w / mapW);
-    ctx.fillStyle = '#0d0e12'; ctx.fillRect(0, 0, w, h);
+    const scale = (w / mapW) * (vs?.zoom || 1);
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, w, h);
 
     // 繪製背景地圖 (在網格與障礙物最底層)
     if (loadedBgImage && bgSettings && bgSettings.visible) {
@@ -271,17 +357,43 @@ const SimulatorCanvas: React.FC<Props> = ({
 
     const pTopLeft = worldToCanvas(0, mapH, w, h, vs);
     const pBottomRight = worldToCanvas(mapW, 0, w, h, vs);
-    ctx.strokeStyle = '#2d333b'; ctx.lineWidth = 2;
-    ctx.strokeRect(pTopLeft.cx, pTopLeft.cy, pBottomRight.cx - pTopLeft.cx, pBottomRight.cy - pTopLeft.cy);
+    const rectX = pTopLeft.cx, rectY = pTopLeft.cy;
+    const rectW = pBottomRight.cx - pTopLeft.cx, rectH = pBottomRight.cy - pTopLeft.cy;
 
-    ctx.fillStyle = '#3a3f4b';
-    for (let x = 0; x <= mapW; x += 5000) {
-      for (let y = 0; y <= mapH; y += 5000) {
-        const { cx, cy } = worldToCanvas(x, y, w, h, vs);
-        if (cx >= 0 && cx <= w && cy >= 0 && cy <= h) {
-            ctx.beginPath(); ctx.arc(cx, cy, 1.5, 0, Math.PI * 2); ctx.fill();
-        }
+    // 分層格線：細格(1m，縮太小時省略) + 粗格(5m)，裁切在世界邊界內
+    ctx.save();
+    ctx.beginPath(); ctx.rect(rectX, rectY, rectW, rectH); ctx.clip();
+    const drawLines = (step: number, color: string) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath();
+      for (let x = 0; x <= mapW; x += step) {
+        const { cx } = worldToCanvas(x, 0, w, h, vs);
+        if (cx < rectX - 1 || cx > rectX + rectW + 1) continue;
+        ctx.moveTo(cx, rectY); ctx.lineTo(cx, rectY + rectH);
       }
+      for (let y = 0; y <= mapH; y += step) {
+        const { cy } = worldToCanvas(0, y, w, h, vs);
+        if (cy < rectY - 1 || cy > rectY + rectH + 1) continue;
+        ctx.moveTo(rectX, cy); ctx.lineTo(rectX + rectW, cy);
+      }
+      ctx.stroke();
+    };
+    if (1000 * scale > 6) drawLines(1000, C.gridMinor); // 縮太小時 1m 線太密，省略
+    drawLines(5000, C.gridMajor);
+    ctx.restore();
+
+    // 世界邊界
+    ctx.strokeStyle = C.border; ctx.lineWidth = 3;
+    ctx.strokeRect(rectX, rectY, rectW, rectH);
+
+    // 座標尺規：沿畫面上緣/左緣標示 5m 刻度（螢幕固定，平移縮放皆可見）
+    ctx.fillStyle = C.ruler; ctx.font = 'bold 10px monospace';
+    for (let x = 0; x <= mapW; x += 5000) {
+      const { cx } = worldToCanvas(x, 0, w, h, vs);
+      if (cx >= 12 && cx <= w - 2) { ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(`${x / 1000}m`, cx, 3); }
+    }
+    for (let y = 0; y <= mapH; y += 5000) {
+      const { cy } = worldToCanvas(0, y, w, h, vs);
+      if (cy >= 8 && cy <= h - 2) { ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(`${y / 1000}m`, 3, cy); }
     }
 
     if (telemetry) {
@@ -291,13 +403,13 @@ const SimulatorCanvas: React.FC<Props> = ({
             ctx.save(); ctx.translate(cx, cy);
             if (ob.type === 'circle') {
                 const r = (ob.radius || 500) * scale;
-                ctx.fillStyle = isSelected ? '#ff6600' : '#d4af37'; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
-                ctx.strokeStyle = isSelected ? '#fff' : '#ffd700'; ctx.lineWidth = 1.5; ctx.stroke();
+                ctx.fillStyle = isSelected ? C.obstacleSel : C.obstacle; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = C.obstacleStroke; ctx.lineWidth = isSelected ? 3 : 2; ctx.stroke();
             } else {
                 ctx.rotate(-(ob.angle || 0));
                 const ow = (ob.width || 0) * scale, oh = (ob.height || 0) * scale;
-                ctx.fillStyle = isSelected ? '#ff6600' : '#d4af37'; ctx.fillRect(-ow/2, -oh/2, ow, oh);
-                ctx.strokeStyle = isSelected ? '#fff' : '#ffd700'; ctx.lineWidth = 1.5; ctx.strokeRect(-ow/2, -oh/2, ow, oh);
+                ctx.fillStyle = isSelected ? C.obstacleSel : C.obstacle; ctx.fillRect(-ow/2, -oh/2, ow, oh);
+                ctx.strokeStyle = C.obstacleStroke; ctx.lineWidth = isSelected ? 3 : 2; ctx.strokeRect(-ow/2, -oh/2, ow, oh);
             }
             ctx.restore();
         });
@@ -320,7 +432,7 @@ const SimulatorCanvas: React.FC<Props> = ({
     if (!ctx) return;
 
     const now = performance.now();
-    const scale = (w / mapW);
+    const scale = (w / mapW) * (vs?.zoom || 1);
 
     if (staticNeedsUpdate.current) updateStaticLayer(w, h, vs, currentTelemetry);
     if (staticCanvasRef.current) ctx.drawImage(staticCanvasRef.current, 0, 0);
@@ -361,7 +473,7 @@ const SimulatorCanvas: React.FC<Props> = ({
                 lastSearchFingerprints.current[selectedAgv.id] = fingerprint;
             }
             if (revealedIndices.current[selectedAgv.id] < selectedAgv.visited.length) revealedIndices.current[selectedAgv.id] += 100;
-            ctx.fillStyle = 'rgba(0, 255, 255, 0.08)';
+            ctx.fillStyle = 'rgba(46, 125, 209, 0.12)';
             const blockSize = GRID_SIZE * scale;
             const count = revealedIndices.current[selectedAgv.id] || 0;
             for (let i = 0; i < Math.min(count, selectedAgv.visited.length); i++) {
@@ -377,14 +489,15 @@ const SimulatorCanvas: React.FC<Props> = ({
       const { cx, cy } = worldToCanvas(a.target.x, a.target.y, w, h, vs);
       ctx.save(); ctx.translate(cx, cy);
       const pulse = Math.max(0.1, (1 + Math.sin(now / 200) * 0.15));
-      ctx.strokeStyle = isSelected ? '#39ff14' : '#1b5e20'; ctx.lineWidth = 2;
+      ctx.strokeStyle = isSelected ? C.target : C.targetIdle; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(0, 0, 12 * pulse, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-15, 0); ctx.lineTo(15, 0); ctx.moveTo(0, -15); ctx.lineTo(0, 15); ctx.stroke();
       ctx.restore();
 
       if (isSelected && a.path) {
-        ctx.save(); ctx.setLineDash([5, 5]); ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2;
-        ctx.shadowBlur = 10; ctx.shadowColor = '#ff4d4d'; ctx.beginPath();
+        // 流動虛線：粗實藍線 + 流動偏移
+        ctx.save(); ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(now / 40) % 12;
+        ctx.strokeStyle = C.pathSel; ctx.lineWidth = 3; ctx.beginPath();
         a.path.forEach((p, i) => {
           const cp = worldToCanvas(p[0], p[1], w, h, vs);
           if (i === 0) ctx.moveTo(cp.cx, cp.cy); else ctx.lineTo(cp.cx, cp.cy);
@@ -397,9 +510,9 @@ const SimulatorCanvas: React.FC<Props> = ({
         if (distToTarget > 100) {
             const p1 = worldToCanvas(a.x, a.y, w, h, vs);
             const p2 = worldToCanvas(a.target.x, a.target.y, w, h, vs);
-            ctx.save(); 
-            ctx.setLineDash([4, 4]); 
-            ctx.strokeStyle = '#00f2ff'; 
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = C.pathSel;
             ctx.lineWidth = 1.5;
             ctx.beginPath(); 
             ctx.moveTo(p1.cx, p1.cy); 
@@ -411,7 +524,7 @@ const SimulatorCanvas: React.FC<Props> = ({
     });
 
     if (currentTelemetry.path_occupancy) {
-        ctx.save(); ctx.strokeStyle = 'rgba(255, 77, 77, 0.15)';
+        ctx.save(); ctx.strokeStyle = C.occupancy;
         ctx.lineWidth = 1600 * scale; // 兩倍半徑，作為線寬
         ctx.lineCap = 'round'; ctx.lineJoin = 'round';
         Object.values(currentTelemetry.path_occupancy).forEach(points => {
@@ -435,8 +548,8 @@ const SimulatorCanvas: React.FC<Props> = ({
             const toAgv = currentTelemetry.agvs.find(a => a.id === link.to);
             if (fromAgv && toAgv) {
                 const p1 = worldToCanvas(fromAgv.x, fromAgv.y, w, h, vs), p2 = worldToCanvas(toAgv.x, toAgv.y, w, h, vs);
-                ctx.save(); ctx.setLineDash([5, 5]); ctx.strokeStyle = link.type === 'WAITING' ? 'rgba(255, 152, 0, 0.6)' : 'rgba(187, 134, 252, 0.6)';
-                ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p1.cx, p1.cy); ctx.lineTo(p2.cx, p2.cy); ctx.stroke();
+                ctx.save(); ctx.setLineDash([5, 5]); ctx.strokeStyle = link.type === 'WAITING' ? 'rgba(199, 120, 0, 0.9)' : 'rgba(122, 63, 201, 0.9)';
+                ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(p1.cx, p1.cy); ctx.lineTo(p2.cx, p2.cy); ctx.stroke();
                 const angle = Math.atan2(p2.cy - p1.cy, p2.cx - p1.cx);
                 ctx.translate(p2.cx - Math.cos(angle) * 30, p2.cy - Math.sin(angle) * 30);
                 ctx.rotate(angle); ctx.fillStyle = ctx.strokeStyle;
@@ -452,11 +565,13 @@ const SimulatorCanvas: React.FC<Props> = ({
             const target = currentTelemetry.obstacles.find(ob => ob.id === task.target_id);
             if (source && target) {
                 const p1 = worldToCanvas(source.x, source.y, w, h, vs), p2 = worldToCanvas(target.x, target.y, w, h, vs);
-                ctx.save(); ctx.setLineDash([8, 4]); ctx.strokeStyle = task.status === 'ASSIGNED' ? 'rgba(57, 255, 20, 0.4)' : 'rgba(88, 166, 255, 0.4)';
-                ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p1.cx, p1.cy); ctx.lineTo(p2.cx, p2.cy); ctx.stroke();
+                ctx.save(); ctx.setLineDash([8, 4]); ctx.strokeStyle = task.status === 'ASSIGNED' ? 'rgba(21, 153, 71, 0.75)' : 'rgba(46, 125, 209, 0.7)';
+                ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(p1.cx, p1.cy); ctx.lineTo(p2.cx, p2.cy); ctx.stroke();
                 const midX = (p1.cx + p2.cx) / 2, midY = (p1.cy + p2.cy) / 2;
-                ctx.fillStyle = task.status === 'ASSIGNED' ? '#39ff14' : '#58a6ff';
+                ctx.setLineDash([]); ctx.lineWidth = 3; ctx.strokeStyle = '#FFF8E7';
                 ctx.font = `bold 11px monospace`; ctx.textAlign = 'center';
+                ctx.strokeText(task.status, midX, midY - 5);
+                ctx.fillStyle = task.status === 'ASSIGNED' ? C.target : '#2E7DD1';
                 ctx.fillText(task.status, midX, midY - 5); ctx.restore();
             }
         });
@@ -468,42 +583,47 @@ const SimulatorCanvas: React.FC<Props> = ({
       const isSelected = a.id === selectedAgvIdRef.current;
       const sz = 1000 * scale;
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(-ds.theta);
-      let strokeColor = isSelected ? '#00f2ff' : '#555';
-      ctx.fillStyle = '#1a1a1a'; ctx.strokeStyle = strokeColor; ctx.lineWidth = 2;
-      const r = Math.max(0.1, 10 * scale);
+      const r = Math.max(0.1, 8 * scale);
+      // Neubrutalism：平塗車體 + 純黑粗邊 + 硬式偏移投影（選中改藍色投影）
+      ctx.shadowColor = isSelected ? C.agvSel : '#000000';
+      ctx.shadowBlur = 0; ctx.shadowOffsetX = isSelected ? 4 : 3; ctx.shadowOffsetY = isSelected ? 4 : 3;
+      ctx.fillStyle = C.agvBody;
       ctx.beginPath(); ctx.moveTo(-sz/2 + r, -sz/2); ctx.lineTo(sz/2 - r, -sz/2);
       ctx.quadraticCurveTo(sz/2, -sz/2, sz/2, -sz/2 + r); ctx.lineTo(sz/2, sz/2 - r);
       ctx.quadraticCurveTo(sz/2, sz/2, sz/2 - r, sz/2); ctx.lineTo(-sz/2 + r, sz/2);
       ctx.quadraticCurveTo(-sz/2, sz/2, -sz/2, sz/2 - r); ctx.lineTo(-sz/2, -sz/2 + r);
-      ctx.quadraticCurveTo(-sz/2, -sz/2, -sz/2 + r, -sz/2); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, Math.max(0.1, sz/4), 0, Math.PI * 2); ctx.fillStyle = '#333'; ctx.fill();
-      ctx.fillStyle = isSelected ? '#00f2ff' : '#aaa';
-      ctx.beginPath(); ctx.moveTo(sz/2 - 5, 0); ctx.lineTo(sz/2 - 15, -10); ctx.lineTo(sz/2 - 15, 10); ctx.fill();
-      const ledColor = a.status === 'ERROR' ? '#ff0000' : (a.is_running ? '#00ff00' : (a.is_planning || a.status === 'BLOCKED' ? '#ffc107' : '#ff3333'));
-      ctx.beginPath(); ctx.arc(-sz/2 + 15, -sz/2 + 15, 4, 0, Math.PI * 2);
-      ctx.fillStyle = ledColor; ctx.shadowBlur = 8; ctx.shadowColor = ledColor; ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.quadraticCurveTo(-sz/2, -sz/2, -sz/2 + r, -sz/2); ctx.fill();
+      // 投影只作用於填色；描邊要清晰，先關閉陰影（沿用同一路徑）
+      ctx.shadowColor = 'transparent'; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
+      ctx.strokeStyle = isSelected ? C.agvSel : C.agvStroke; ctx.lineWidth = isSelected ? 4 : 3; ctx.stroke();
+      // 中央輪轂
+      ctx.beginPath(); ctx.arc(0, 0, Math.max(0.1, sz/5), 0, Math.PI * 2); ctx.fillStyle = C.agvHub; ctx.fill();
+      // 車頭方向箭頭
+      ctx.fillStyle = C.agvArrow;
+      ctx.beginPath(); ctx.moveTo(sz/2 - 4, 0); ctx.lineTo(sz/2 - 16, -11); ctx.lineTo(sz/2 - 16, 11); ctx.fill();
+      // 狀態 LED（平塗語意色 + 黑框，取代發光）
+      const ledColor = STATUS_COLORS[a.status] || (a.is_running ? C.target : '#6e7681');
+      ctx.beginPath(); ctx.arc(-sz/2 + 15, -sz/2 + 15, 5, 0, Math.PI * 2);
+      ctx.fillStyle = ledColor; ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
       if (a.has_goods) {
-          ctx.fillStyle = '#ff9800'; ctx.strokeStyle = '#e65100'; ctx.lineWidth = 1;
+          ctx.fillStyle = C.cargo; ctx.strokeStyle = C.cargoStroke; ctx.lineWidth = 2;
           const cargoSize = sz * 0.4; ctx.fillRect(-cargoSize/2, -cargoSize/2, cargoSize, cargoSize);
           ctx.strokeRect(-cargoSize/2, -cargoSize/2, cargoSize, cargoSize);
       }
       ctx.restore();
-      ctx.fillStyle = '#fff'; ctx.font = `bold 11px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText(a.id, cx, cy - sz * 0.75);
-      
-      // 繪製狀態文字與 Emoji
-      const statusEmojis: Record<string, string> = {
-        'IDLE': '💤', 'PLANNING': '🔄', 'EXECUTING': '🚚', 'EVADING': '🛡️', 
-        'STUCK': '⚠️', 'LOADING': '📥', 'UNLOADING': '📤',
-        'WAITING': '⏸️', 'THINKING': '🧠', 'YIELDING': '🛡️',
-        'BLOCKED': '🚧', 'ERROR': '❌'
-      };
-      const emoji = statusEmojis[a.status] || '❓';
-      ctx.fillStyle = (a.status === 'STUCK' || a.status === 'ERROR') ? '#ff3333' : '#aaa';
-      ctx.font = `9px monospace`;
-      ctx.fillText(`${emoji} ${a.status}`, cx, cy + sz * 0.75);
+
+      // 標籤只在「懸停」或「選中」時顯示，並置於車體外側，避免蓋住 AGV 本體。
+      if (isSelected || hoveredAgvId.current === a.id) {
+        const idY = cy - Math.max(sz / 2 + 12, 16);
+        ctx.font = `bold 11px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const idw = ctx.measureText(a.id).width;
+        rr(ctx, cx - idw / 2 - 5, idY - 8, idw + 10, 16, 0);
+        ctx.fillStyle = C.labelBg; ctx.fill();
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.fillStyle = C.label; ctx.fillText(a.id, cx, idY);
+        drawStatusPill(ctx, cx, cy + Math.max(sz / 2 + 12, 16), a.status);
+      }
     });
 
     currentTelemetry.obstacles.filter(ob => ob.type === 'equipment').forEach(ob => {
@@ -511,27 +631,28 @@ const SimulatorCanvas: React.FC<Props> = ({
       const isSelected = selectedObstacleIdRef.current === ob.id;
       const isAutoSource = autoTaskSourceId === ob.id;
       const size = (ob.radius || 1000) * scale;
-      const colors: Record<string, string> = { 'normal': '#ffd700', 'running': '#39ff14', 'error': '#ff4d4d' };
-      const baseColor = colors[ob.status || 'running'] || '#39ff14';
+      const baseColor = EQUIP_COLORS[ob.status || 'running'] || EQUIP_COLORS.running;
       const dockingAngle = ob.docking_angle !== undefined ? ob.docking_angle : 0;
       const angleRad = (dockingAngle * Math.PI) / 180;
       ctx.save(); ctx.translate(cx, cy);
       ctx.rotate(-angleRad + Math.PI);
       const iconScale = size / 50; ctx.scale(iconScale, iconScale);
-      ctx.globalAlpha = 0.7; ctx.fillStyle = (isSelected || isAutoSource) ? '#ff6600' : baseColor;
-      ctx.fill(stationPath2D); ctx.globalAlpha = 1.0; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 / iconScale;
-      ctx.stroke(stationPath2D); ctx.beginPath(); ctx.arc(0, 0, 5 / iconScale, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.fillStyle = (isSelected || isAutoSource) ? C.obstacleSel : baseColor;
+      ctx.fill(stationPath2D); ctx.strokeStyle = '#000'; ctx.lineWidth = 3 / iconScale;
+      ctx.stroke(stationPath2D); ctx.beginPath(); ctx.arc(0, 0, 5 / iconScale, 0, Math.PI * 2); ctx.fillStyle = '#000'; ctx.fill();
       if (ob.has_goods) {
-          ctx.fillStyle = '#ff9800'; ctx.strokeStyle = '#e65100'; ctx.lineWidth = 1 / iconScale;
+          ctx.fillStyle = C.cargo; ctx.strokeStyle = C.cargoStroke; ctx.lineWidth = 2 / iconScale;
           const cargoSize = 40; ctx.fillRect(-cargoSize/2, -cargoSize/2, cargoSize, cargoSize); ctx.strokeRect(-cargoSize/2, -cargoSize/2, cargoSize, cargoSize);
       }
       ctx.restore();
       if (ob.docking_angle !== undefined) {
           ctx.save(); ctx.translate(cx, cy); const angleRad = (ob.docking_angle * Math.PI) / 180; ctx.rotate(-angleRad + Math.PI);
-          ctx.strokeStyle = '#00f2ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(size * 0.8, 0);
+          ctx.strokeStyle = C.docking; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(size * 0.8, 0);
           ctx.lineTo(size * 0.6, -size * 0.1); ctx.moveTo(size * 0.8, 0); ctx.lineTo(size * 0.6, size * 0.1); ctx.stroke(); ctx.restore();
       }
-      ctx.save(); ctx.translate(cx, cy); ctx.fillStyle = '#fff'; ctx.font = `bold 12px monospace`; ctx.textAlign = 'center'; ctx.fillText(ob.id, 0, -size - 10); ctx.restore();
+      ctx.save(); ctx.translate(cx, cy); ctx.font = `bold 12px monospace`; ctx.textAlign = 'center';
+      ctx.lineWidth = 3; ctx.strokeStyle = '#FFF8E7'; ctx.strokeText(ob.id, 0, -size - 10);
+      ctx.fillStyle = '#000'; ctx.fillText(ob.id, 0, -size - 10); ctx.restore();
     });
 
     animationFrameId.current = requestAnimationFrame(render);
@@ -547,7 +668,7 @@ const SimulatorCanvas: React.FC<Props> = ({
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
       <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} 
-        style={{ border: '2px solid #333', background: '#0d0e12', cursor: agvDragHolding.current ? 'grabbing' : (allowAgvDrag ? 'grab' : (isDragging.current ? 'grabbing' : 'crosshair')) }}
+        style={{ border: '3px solid #000', borderRadius: 0, background: '#FFF8E7', boxShadow: '6px 6px 0 #000', cursor: agvDragHolding.current ? 'grabbing' : (allowAgvDrag ? 'grab' : (isDragging.current ? 'grabbing' : 'crosshair')) }}
         onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
         onClick={(e) => {
             if (e.altKey) return;
@@ -572,7 +693,7 @@ const SimulatorCanvas: React.FC<Props> = ({
           }
         }} 
       />
-      <button style={{ position: 'absolute', bottom: '20px', right: '20px', opacity: 0.6 }} onClick={() => { viewStateRef.current = { offsetX: 0, offsetY: 0 }; staticNeedsUpdate.current = true; }}>
+      <button style={{ position: 'absolute', bottom: '20px', right: '20px', opacity: 0.6 }} onClick={() => { viewStateRef.current = { offsetX: 0, offsetY: 0, zoom: 1 }; staticNeedsUpdate.current = true; }}>
         RESET VIEW
       </button>
     </div>
